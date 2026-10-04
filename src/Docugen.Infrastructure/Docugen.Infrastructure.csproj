@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Docugen.Infrastructure</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CsvHelper" />
+    <PackageReference Include="DocumentFormat.OpenXml" />
+    <PackageReference Include="Fluid.Core" />
+    <PackageReference Include="Microsoft.Data.SqlClient" />
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="Microsoft.Playwright" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Docugen.Core\Docugen.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Rendering\Pdf\Templates\default.html" LogicalName="Docugen.Templates.default.html" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Docugen.Infrastructure.Tests" />
+  </ItemGroup>
+
+</Project>

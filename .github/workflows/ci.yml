@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Install Chromium for PDF rendering
+        run: dotnet src/Docugen.Api/bin/Release/net10.0/Docugen.Api.dll install-browsers --with-deps
+
+      # Includes the SQL Server integration tests, which use Docker (available on GitHub-hosted runners).
+      - name: Test
+        run: dotnet test --no-build --configuration Release
+
+  docker-image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build --tag docugen:ci .

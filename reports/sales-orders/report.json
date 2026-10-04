@@ -1,0 +1,31 @@
+{
+  // Order listing for a date range, optionally filtered to one region.
+  "key": "sales-orders",
+  "name": "Sales Orders",
+  "description": "Orders placed in the selected period, with totals.",
+  "dataSource": "SalesDb",
+  "commandTimeoutSeconds": 60,
+  "allowedRoles": ["Sales", "Finance"],
+  "formats": ["pdf", "xlsx", "csv"],
+  "culture": "en-US",
+  "parameters": [
+    { "name": "FromDate", "label": "From", "type": "date", "required": true },
+    { "name": "ToDate", "label": "To", "type": "date", "required": true },
+    { "name": "Region", "label": "Region", "type": "string", "allowedValues": ["North", "South", "East", "West"] }
+  ],
+  "columns": [
+    { "field": "OrderDate", "header": "Order Date", "format": "dd-mmm-yyyy", "width": 14 },
+    { "field": "OrderNumber", "header": "Order No." },
+    { "field": "Customer", "header": "Customer", "width": 28 },
+    { "field": "Region", "header": "Region" },
+    { "field": "Quantity", "header": "Qty", "format": "#,##0" },
+    { "field": "Total", "header": "Total", "format": "#,##0.00", "width": 14 }
+  ],
+  "fileName": "sales-orders-{FromDate:yyyyMMdd}-{ToDate:yyyyMMdd}",
+  "pdf": {
+    "template": "template.html",
+    "pageSize": "A4",
+    "landscape": false,
+    "maxRows": 5000
+  }
+}

@@ -1,0 +1,21 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: "Segoe UI", "Noto Sans", "Liberation Sans", Arial, sans-serif; font-size: 9pt; color: #1f2937; }
+.report-header { display: flex; align-items: center; gap: 14px; padding-bottom: 10px; border-bottom: 2px solid #1f4e79; }
+.report-header .logo { height: 40px; }
+.report-header h1 { margin: 0; font-size: 17pt; color: #1f4e79; }
+.report-header .subtitle { margin: 2px 0 0; color: #4b5563; }
+.report-header .generated { margin-left: auto; text-align: right; font-size: 8pt; color: #6b7280; }
+.cards { display: flex; gap: 10px; margin: 12px 0; }
+.card { flex: 1; border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px 10px; }
+.card span { display: block; font-size: 7.5pt; text-transform: uppercase; letter-spacing: .04em; color: #6b7280; }
+.card strong { font-size: 14pt; font-variant-numeric: tabular-nums; }
+.card.accent { background: #1f4e79; border-color: #1f4e79; color: #fff; }
+.card.accent span { color: #cfe0f1; }
+table.data { width: 100%; border-collapse: collapse; }
+table.data thead { display: table-header-group; }
+table.data th { background: #f1f5f9; color: #1f2937; text-align: left; font-weight: 600; padding: 5px 6px; border-bottom: 1px solid #cbd5e1; }
+table.data td { padding: 4px 6px; border-bottom: 1px solid #eef2f6; }
+table.data tr { break-inside: avoid; }
+table.data tr.total td { font-weight: 700; border-top: 2px solid #1f4e79; border-bottom: none; padding-top: 6px; }
+.num, table.data .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.empty { text-align: center; color: #6b7280; padding: 24px; }

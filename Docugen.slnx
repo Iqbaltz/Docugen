@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Docugen.Api/Docugen.Api.csproj" />
+    <Project Path="src/Docugen.Core/Docugen.Core.csproj" />
+    <Project Path="src/Docugen.Infrastructure/Docugen.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Docugen.Api.Tests/Docugen.Api.Tests.csproj" />
+    <Project Path="tests/Docugen.Core.Tests/Docugen.Core.Tests.csproj" />
+    <Project Path="tests/Docugen.Infrastructure.Tests/Docugen.Infrastructure.Tests.csproj" />
+  </Folder>
+</Solution>

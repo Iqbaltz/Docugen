@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{{ report.name }}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Segoe UI", "Noto Sans", "Liberation Sans", Arial, sans-serif; font-size: 9pt; color: #1f2937; }
+    header { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; border-bottom: 2px solid #1f4e79; padding-bottom: 8px; margin-bottom: 10px; }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand img { height: 32px; }
+    h1 { margin: 0; font-size: 16pt; color: #1f4e79; }
+    .description { margin-top: 2px; color: #4b5563; }
+    .meta { color: #6b7280; font-size: 8pt; text-align: right; white-space: nowrap; }
+    .filters { margin: 0 0 10px; display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 8.5pt; }
+    .filters b { color: #374151; }
+    table { width: 100%; border-collapse: collapse; }
+    thead { display: table-header-group; }
+    th { background: #1f4e79; color: #fff; text-align: left; padding: 5px 6px; font-weight: 600; }
+    td { padding: 4px 6px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+    tr { break-inside: avoid; }
+    tbody tr:nth-child(even) td { background: #f5f7fa; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .empty { padding: 24px; text-align: center; color: #6b7280; }
+    .summary { margin-top: 8px; color: #6b7280; font-size: 8pt; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      {% if assets.logo_svg %}<img src="{{ assets.logo_svg }}" alt="">{% endif %}
+      <div>
+        <h1>{{ report.name }}</h1>
+        {% if report.description %}<div class="description">{{ report.description }}</div>{% endif %}
+      </div>
+    </div>
+    <div class="meta">Generated {{ generated_at_display }}{% if generated_by %}<br>by {{ generated_by }}{% endif %}</div>
+  </header>
+
+  {% if parameter_list.size > 0 %}
+  <div class="filters">
+    {% for p in parameter_list %}<span><b>{{ p.label }}:</b> {{ p.display }}</span>{% endfor %}
+  </div>
+  {% endif %}
+
+  <table>
+    <thead>
+      <tr>{% for c in columns %}<th{% if c.numeric %} class="num"{% endif %}>{{ c.header }}</th>{% endfor %}</tr>
+    </thead>
+    <tbody>
+      {% for row in display_rows %}
+      <tr>{% for cell in row %}{% assign c = columns[forloop.index0] %}<td{% if c.numeric %} class="num"{% endif %}>{{ cell }}</td>{% endfor %}</tr>
+      {% else %}
+      <tr><td class="empty" colspan="{{ columns.size }}">No data for the selected filters.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="summary">{{ row_count }} row{% if row_count != 1 %}s{% endif %}</div>
+</body>
+</html>

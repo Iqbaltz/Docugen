@@ -1,8 +1,8 @@
 namespace Docugen.Core.Reports;
 
 /// <summary>
-/// A named report registered in the <c>Reports</c> table: the SQL it runs, the parameters callers may supply,
-/// who may run it and how each output format is produced.
+/// A named report registered in the store (<c>Reports</c> and its <c>ReportParameters</c>, <c>ReportColumns</c> and
+/// <c>ReportPdfSettings</c> rows): the SQL it runs, the parameters callers may supply and how each format is produced.
 /// </summary>
 public sealed record ReportDefinition
 {
@@ -28,9 +28,6 @@ public sealed record ReportDefinition
 
     public int? CommandTimeoutSeconds { get; init; }
 
-    /// <summary>Roles allowed to run the report. Empty means every authenticated caller.</summary>
-    public IReadOnlyList<string> AllowedRoles { get; init; } = [];
-
     public IReadOnlyList<OutputFormat> Formats { get; init; } = [OutputFormat.Pdf, OutputFormat.Xlsx, OutputFormat.Csv];
 
     public IReadOnlyList<ParameterDefinition> Parameters { get; init; } = [];
@@ -44,7 +41,7 @@ public sealed record ReportDefinition
     /// </summary>
     public string? FileName { get; init; }
 
-    /// <summary>Culture used for number and date formatting in PDF output, e.g. <c>id-ID</c>.</summary>
+    /// <summary>Culture used for number and date formatting in PDF output, e.g. <c>id-ID</c> (<c>ReportPdfSettings.Culture</c>).</summary>
     public string? Culture { get; init; }
 
     public PdfOptions Pdf { get; init; } = new();

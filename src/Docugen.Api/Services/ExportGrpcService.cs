@@ -19,7 +19,7 @@ public sealed class ExportGrpcService(IReportCatalog catalog, ReportExporter exp
     public override async Task Export(ExportRequest request, IServerStreamWriter<ExportResponse> responseStream, ServerCallContext context)
     {
         var user = context.GetHttpContext().User;
-        var report = GrpcErrors.FindRunnable(catalog, request.ReportKey, user);
+        var report = GrpcErrors.FindReport(catalog, request.ReportKey);
 
         var violations = new List<BadRequest.Types.FieldViolation>();
         var format = GrpcMapping.FromProto(request.Format);

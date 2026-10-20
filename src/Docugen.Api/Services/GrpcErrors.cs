@@ -1,5 +1,3 @@
-using System.Security.Claims;
-using Docugen.Core;
 using Docugen.Core.Exports;
 using Docugen.Core.Reports;
 using Docugen.Infrastructure.Exports;
@@ -14,14 +12,9 @@ internal static class GrpcErrors
 {
     public const string Domain = "docugen";
 
-    /// <summary>The report, if it exists and the caller may run it; otherwise NOT_FOUND or PERMISSION_DENIED.</summary>
-    public static ReportDefinition FindRunnable(IReportCatalog catalog, string key, ClaimsPrincipal user)
-    {
-        var report = catalog.Find(key) ?? throw new RpcException(new RpcStatus(StatusCode.NotFound, $"There is no report named '{key}'."));
-        return ReportAccess.CanRun(user, report)
-            ? report
-            : throw new RpcException(new RpcStatus(StatusCode.PermissionDenied, $"You are not allowed to run report '{key}'."));
-    }
+    /// <summary>The report, or NOT_FOUND.</summary>
+    public static ReportDefinition FindReport(IReportCatalog catalog, string key) =>
+        catalog.Find(key) ?? throw new RpcException(new RpcStatus(StatusCode.NotFound, $"There is no report named '{key}'."));
 
     /// <summary>INVALID_ARGUMENT with a readable message and a google.rpc.BadRequest listing each field.</summary>
     public static RpcException InvalidArgument(IReadOnlyList<BadRequest.Types.FieldViolation> violations)

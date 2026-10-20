@@ -13,7 +13,7 @@ namespace Docugen.Api.Tests;
 
 public sealed class GrpcServicesTests(DocugenApiFactory factory) : IClassFixture<DocugenApiFactory>
 {
-    private static readonly Metadata Sam = DocugenApiFactory.As("sam@example.com", "Sales");
+    private static readonly Metadata Sam = DocugenApiFactory.WithKey(DocugenApiFactory.TestAppKey);
     private static readonly object FirstQuarter = new { FromDate = "2026-01-01", ToDate = "2026-03-31" };
 
     private static CancellationToken Cancel => TestContext.Current.CancellationToken;
@@ -23,21 +23,23 @@ public sealed class GrpcServicesTests(DocugenApiFactory factory) : IClassFixture
     private ExportService.ExportServiceClient Exports => new(factory.Channel);
 
     [Fact]
-    public async Task Requires_authentication()
+    public async Task Requires_a_valid_api_key()
     {
-        var error = await Assert.ThrowsAsync<RpcException>(() => Reports.ListReportsAsync(new ListReportsRequest(), cancellationToken: Cancel).ResponseAsync);
+        var missing = await Assert.ThrowsAsync<RpcException>(() => Reports.ListReportsAsync(new ListReportsRequest(), cancellationToken: Cancel).ResponseAsync);
+        var wrong = await Assert.ThrowsAsync<RpcException>(() => Reports.ListReportsAsync(new ListReportsRequest(), DocugenApiFactory.WithKey("not-the-right-key-1234"), cancellationToken: Cancel).ResponseAsync);
+        var export = await Assert.ThrowsAsync<RpcException>(() => ExportAsync("sales-orders", OutputFormat.Csv, FirstQuarter, DocugenApiFactory.WithKey(DocugenApiFactory.TestAppKey + "x")));
 
-        Assert.Equal(StatusCode.Unauthenticated, error.StatusCode);
+        Assert.Equal(StatusCode.Unauthenticated, missing.StatusCode);
+        Assert.Equal(StatusCode.Unauthenticated, wrong.StatusCode);
+        Assert.Equal(StatusCode.Unauthenticated, export.StatusCode);
     }
 
     [Fact]
-    public async Task Lists_only_the_reports_the_caller_may_run()
+    public async Task Lists_the_active_reports()
     {
-        var sales = await Reports.ListReportsAsync(new ListReportsRequest(), Sam, cancellationToken: Cancel);
-        var other = await Reports.ListReportsAsync(new ListReportsRequest(), DocugenApiFactory.As("olga", "Warehouse"), cancellationToken: Cancel);
+        var reports = await Reports.ListReportsAsync(new ListReportsRequest(), Sam, cancellationToken: Cancel);
 
-        Assert.Equal(["customer-list", "sales-orders"], sales.Reports.Select(r => r.Key).Order());
-        Assert.Equal(["customer-list"], other.Reports.Select(r => r.Key));
+        Assert.Equal(["customer-list", "sales-orders"], reports.Reports.Select(r => r.Key).Order());
     }
 
     [Fact]
@@ -74,7 +76,7 @@ public sealed class GrpcServicesTests(DocugenApiFactory factory) : IClassFixture
         var log = factory.Services.GetRequiredService<IExportLog>();
         var id = Guid.Parse(result.File.ExportId);
         var record = await log.FindAsync(id, Cancel);
-        Assert.Equal((Core.Exports.ExportStatus.Succeeded, result.File.RowCount, "sam@example.com"), (record!.Status, record.RowsExported, record.RequestedBy));
+        Assert.Equal((Core.Exports.ExportStatus.Succeeded, result.File.RowCount, "TestApp"), (record!.Status, record.RowsExported, record.RequestedBy));
         Assert.Equal(
             ["Started", "CountingRows", "Counted", "Querying", "WritingRows", "Finalizing", "Generated", "Sent"],
             (await log.GetEventsAsync(id, Cancel)).Select(e => e.EventType));
@@ -126,14 +128,13 @@ public sealed class GrpcServicesTests(DocugenApiFactory factory) : IClassFixture
     }
 
     [Fact]
-    public async Task Returns_not_found_for_unknown_reports_and_permission_denied_without_the_role()
+    public async Task Returns_not_found_for_unknown_reports()
     {
-        var unknown = await Assert.ThrowsAsync<RpcException>(() => ExportAsync("nope", OutputFormat.Csv, new { }));
-        var forbidden = await Assert.ThrowsAsync<RpcException>(() =>
-            ExportAsync("sales-orders", OutputFormat.Csv, FirstQuarter, DocugenApiFactory.As("olga", "Warehouse")));
+        var export = await Assert.ThrowsAsync<RpcException>(() => ExportAsync("nope", OutputFormat.Csv, new { }));
+        var describe = await Assert.ThrowsAsync<RpcException>(() => Reports.GetReportAsync(new GetReportRequest { Key = "nope" }, Sam, cancellationToken: Cancel).ResponseAsync);
 
-        Assert.Equal(StatusCode.NotFound, unknown.StatusCode);
-        Assert.Equal(StatusCode.PermissionDenied, forbidden.StatusCode);
+        Assert.Equal(StatusCode.NotFound, export.StatusCode);
+        Assert.Equal(StatusCode.NotFound, describe.StatusCode);
     }
 
     [Fact]
@@ -154,7 +155,7 @@ public sealed class GrpcServicesTests(DocugenApiFactory factory) : IClassFixture
     [Fact]
     public async Task Logs_calls_that_run_out_of_time_as_cancelled_and_never_leaves_them_running()
     {
-        var caller = DocugenApiFactory.As("deadline@example.com", "Sales");
+        var caller = DocugenApiFactory.WithKey(DocugenApiFactory.DeadlineAppKey);
         foreach (var deadlineMs in new[] { 1, 5, 20, 60, 150 })
         {
             var request = new ExportRequest { ReportKey = "sales-orders", Format = OutputFormat.Pdf, Parameters = Struct.Parser.ParseJson(JsonSerializer.Serialize(FirstQuarter)) };
@@ -173,7 +174,7 @@ public sealed class GrpcServicesTests(DocugenApiFactory factory) : IClassFixture
         var statuses = new List<string>();
         for (var attempt = 0; attempt < 100; attempt++)
         {
-            statuses = await QueryStatusesAsync("deadline@example.com");
+            statuses = await QueryStatusesAsync("DeadlineApp");
             if (!statuses.Contains("Running"))
             {
                 break;

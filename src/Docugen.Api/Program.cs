@@ -1,6 +1,7 @@
+using Docugen.Api.Security;
 using Docugen.Api.Services;
 using Docugen.Infrastructure;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authentication;
 
 // "dotnet Docugen.Api.dll install-browsers" downloads Chromium for PDF rendering (used by the Dockerfile).
 if (args is ["install-browsers", ..])
@@ -15,11 +16,16 @@ builder.Services.AddGrpc(options => options.EnableDetailedErrors = builder.Envir
 builder.Services.AddGrpcHealthChecks();
 builder.Services.AddGrpcReflection();
 
-// Token settings come from Authentication:Schemes:Bearer (Authority, ValidAudiences, ...).
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer();
+// Callers identify themselves with an API key in the x-api-key metadata; keys come from Docugen:ApiKeys.
+builder.Services.AddSingleton(sp => ApiKeys.FromConfiguration(sp.GetRequiredService<IConfiguration>()));
+builder.Services.AddAuthentication(ApiKeyAuthenticationHandler.SchemeName)
+    .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(ApiKeyAuthenticationHandler.SchemeName, null);
 builder.Services.AddAuthorization();
 
 var app = builder.Build();
+
+// Refuse to start without valid API keys rather than fail on the first call.
+app.Services.GetRequiredService<ApiKeys>();
 
 app.UseAuthentication();
 app.UseAuthorization();

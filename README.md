@@ -2,7 +2,7 @@
 
 Docugen is an internal **gRPC service** that turns **named SQL Server reports** into **PDF, Excel (XLSX) and CSV** files, for any application that needs documents. A caller makes one `Export` call and gets back a stream: progress from 0 to 100 while the report runs, then the file. Docugen keeps no state between calls; if an export should run in the background, the calling application runs the call from its own background job. It is built on .NET 10 and ASP.NET Core gRPC.
 
-Reports are **rows in Docugen's own database** (the *store*): the SQL, the parameters callers may pass, who may run it and, optionally, an HTML template for the PDF. Developers add a report with an `INSERT`; Docugen picks it up within 30 seconds, without a restart or deployment. Callers ask for a report by its key and pass parameter values. **They never send SQL.**
+Reports are **rows in Docugen's own database** (the *store*): the SQL, the parameters callers may pass, the output columns and, optionally, an HTML template for the PDF. Developers add a report with a few `INSERT`s; Docugen picks it up within 30 seconds, without a restart or deployment. Callers identify themselves with an **API key**, ask for a report by its key and pass parameter values. **They never send SQL.**
 
 ```
 Export { report_key: "sales-orders", format: XLSX, parameters: { "FromDate": "2026-01-01", "ToDate": "2026-03-31" } }
@@ -14,10 +14,10 @@ Export { report_key: "sales-orders", format: XLSX, parameters: { "FromDate": "20
 ## How it works
 
 ```
-Export ─► catalog ─► access check ─► parameter binding ─► export slot ─► SQL Server ─► renderer ─► temp file ─► stream to caller
-          Reports      AllowedRoles     typed values,        8 at once,     count query    streamed     CSV  (CsvHelper)
-          table        vs. token roles  INVALID_ARGUMENT     50 waiting     (optional),    rows         XLSX (Open XML SDK)
-                                        on bad input                        report query               PDF  (Liquid → Chromium)
+Export ─► API key ─► catalog ─► parameter binding ─► export slot ─► SQL Server ─► renderer ─► temp file ─► stream to caller
+          x-api-key   Report*     typed values,        8 at once,     count query    streamed     CSV  (CsvHelper)
+          metadata    tables      INVALID_ARGUMENT     50 waiting     (optional),    rows         XLSX (Open XML SDK)
+                                  on bad input                        report query               PDF  (Liquid → Chromium)
                                                                   │
                                                                   └─► progress messages on the same stream; Exports + ExportEvents log
 ```
@@ -27,13 +27,14 @@ Export ─► catalog ─► access check ─► parameter binding ─► export
 | `src/Docugen.Contracts` | The gRPC contract: `Protos/docugen/v1/docugen.proto` and the generated C# client and server types. Other .NET apps reference it for a typed client. |
 | `src/Docugen.Core` | Report model, parameter binding, the `ReportGenerator` that runs a query and renders it, the export record and progress interface. Uses only Microsoft packages. |
 | `src/Docugen.Infrastructure` | The store-backed report catalog and its validation; ADO.NET data access (SQL Server, plus Sqlite for demos); the CSV, XLSX and PDF renderers; the exporter and the export log. |
-| `src/Docugen.Api` | The gRPC services, JWT authentication, gRPC health checks and server reflection. |
+| `src/Docugen.Api` | The gRPC services, API key authentication, gRPC health checks and server reflection. |
 | `db/sqlserver/` | The store schema for SQL Server. |
 | `samples/` | Demo sales data (SQL Server and Sqlite), the sample reports for the store, and a ready-made Sqlite store. |
 
 Design choices:
 
 - **No SQL from callers.** The SQL lives in the `Reports` table. Values are always sent to the database as typed `DbParameter`s, never concatenated into the SQL text.
+- **One API key per calling application.** A missing or unknown key gets `UNAUTHENTICATED`. Keys are compared in constant time and never logged, and the key's name identifies the caller in the export log.
 - **One call, no server-side state.** An export lives exactly as long as its `Export` call. Nothing is queued or stored between calls, so any instance can serve any call and instances can be added behind a load balancer.
 - **Protected capacity.** Each instance runs up to 8 exports at once and lets up to 50 more wait for a slot (both configurable); beyond that, callers get `RESOURCE_EXHAUSTED`. PDF printing has its own limit of 4 at once and a time limit.
 - **Honest progress.** Progress messages report the stage (queued, counting, querying, writing rows, finalizing) and the rows written so far. A report with a *count query* also gets an exact percentage, and fails fast when it would exceed the row limit.
@@ -80,9 +81,9 @@ Then:
 dotnet build
 dotnet src/Docugen.Api/bin/Debug/net10.0/Docugen.Api.dll install-browsers
 
-# 2. Create a development token (the caller must be in role Sales or Finance to run sales-orders)
+# 2. Create an API key for yourself, stored in user secrets (any random string of 16+ characters)
 cd src/Docugen.Api
-dotnet user-jwts create --name alice@example.com --role Sales --output token
+dotnet user-secrets set "Docugen:ApiKeys:Postman" "<a random secret>"
 
 # 3. Run the service (gRPC over plain HTTP/2 on localhost:5180)
 dotnet run
@@ -90,11 +91,13 @@ dotnet run
 
 If a Chromium build is already installed somewhere else, you can skip step 1. Point Docugen at it with `Docugen:Pdf:BrowserExecutablePath` instead.
 
+To make a random key, run `openssl rand -base64 32`, or in PowerShell: `$b = New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)`. To see your key again, run `dotnet user-secrets list` in `src/Docugen.Api`. The service will not start without at least one key.
+
 ### Trying it in Postman
 
 1. **New → gRPC**. Enter `localhost:5180` as the URL and leave TLS off.
 2. Under **Service definition**, choose **Using server reflection** (available in Development). This lists `docugen.v1.ReportService` and `docugen.v1.ExportService`.
-3. Under **Metadata**, add `authorization` with the value `Bearer <token>`.
+3. Under **Metadata**, add the key `x-api-key` with your key as the value. Leave the **Authorization** tab set to **No Auth**.
 4. Pick `ExportService/Export` and send:
    ```json
    { "report_key": "sales-orders", "format": "OUTPUT_FORMAT_XLSX", "parameters": { "FromDate": "2026-01-01", "ToDate": "2026-03-31" } }
@@ -103,7 +106,7 @@ If a Chromium build is already installed somewhere else, you can skip step 1. Po
 
 ## Calling Docugen from another application
 
-Every call needs a bearer token in the `authorization` metadata. For service-to-service calls with Entra ID, use the client credentials flow and give the calling app one of the report's roles.
+Ask the Docugen administrators for an API key for your application, keep it in your app's secret store, and send it on every call in the `x-api-key` metadata.
 
 Call `Export` and read the stream to the end: `progress` messages while the report runs, one `file` message, then `chunk` messages to append in order. To stop an export, cancel the call; Docugen stops the query. **Set a deadline** that fits the report: a large PDF can take a minute or more. For exports that take a while, make the call from a background job in your application and pass the progress on to your users.
 
@@ -112,7 +115,7 @@ Call `Export` and read the stream to the end: `progress` messages while the repo
 ```csharp
 using var channel = GrpcChannel.ForAddress("https://docugen.internal");
 var exports = new ExportService.ExportServiceClient(channel);
-var headers = new Metadata { { "authorization", $"Bearer {token}" } };
+var headers = new Metadata { { "x-api-key", apiKey } };
 
 using var call = exports.Export(new ExportRequest
 {
@@ -154,10 +157,19 @@ finally
 
 ## Adding a report
 
-Insert a row into `docugen.Reports`. Copy one from `samples/sqlserver/sample-reports.sql` to start. Docugen loads it at the next refresh (within `Catalog:RefreshInterval`, 30 seconds by default). Then check that it passed validation:
+A report is one row in `docugen.Reports`, plus rows in three small tables as needed:
+
+| Table | Rows | Leave it empty and… |
+|---|---|---|
+| `docugen.Reports` | one per report: its key, name, data source and SQL | (required) |
+| `docugen.ReportParameters` | one per parameter callers may pass | the report takes no parameters |
+| `docugen.ReportColumns` | one per output column: order, header, Excel format and width | every column the query returns is exported, with its SQL name as the header |
+| `docugen.ReportPdfSettings` | one with the PDF template and page settings | the built-in table layout on A4 portrait |
+
+Copy a report from `samples/sqlserver/sample-reports.sql` to start. Docugen loads it at the next refresh (within `Catalog:RefreshInterval`, 30 seconds by default). Then check that it passed validation:
 
 ```sql
-INSERT INTO docugen.Reports (ReportKey, Name, Description, DataSource, Query, CountQuery, AllowedRoles, Parameters, Columns, FileName)
+INSERT INTO docugen.Reports (ReportKey, Name, Description, DataSource, Query, CountQuery, FileName)
 VALUES (
     N'sales-by-region',
     N'Sales by Region',
@@ -173,26 +185,25 @@ VALUES (
     N'SELECT COUNT(DISTINCT c.RegionId)
       FROM Orders o JOIN Customers c ON c.Id = o.CustomerId
       WHERE o.OrderDate BETWEEN @FromDate AND @ToDate',
-    N'Sales,Finance',
-    N'[
-      { "name": "FromDate", "label": "From", "type": "date", "required": true },
-      { "name": "ToDate",   "label": "To",   "type": "date", "required": true }
-    ]',
-    N'[
-      { "field": "Region" },
-      { "field": "Orders",   "format": "#,##0" },
-      { "field": "Quantity", "format": "#,##0" },
-      { "field": "Total",    "format": "#,##0.00" }
-    ]',
     N'sales-by-region-{FromDate:yyyyMMdd}-{ToDate:yyyyMMdd}');
+
+INSERT INTO docugen.ReportParameters (ReportKey, Name, SortOrder, Type, IsRequired, Label) VALUES
+    (N'sales-by-region', N'FromDate', 1, N'date', 1, N'From'),
+    (N'sales-by-region', N'ToDate',   2, N'date', 1, N'To');
+
+INSERT INTO docugen.ReportColumns (ReportKey, Field, SortOrder, Format) VALUES
+    (N'sales-by-region', N'Region',   1, NULL),
+    (N'sales-by-region', N'Orders',   2, N'#,##0'),
+    (N'sales-by-region', N'Quantity', 3, N'#,##0'),
+    (N'sales-by-region', N'Total',    4, N'#,##0.00');
 
 -- Half a minute later:
 SELECT * FROM docugen.ReportValidation WHERE ReportKey = N'sales-by-region';
 ```
 
-To change a report, `UPDATE` its row. To retire one without deleting it, set `IsActive = 0`. `docugen.Reports` is a system-versioned table, so every earlier version is kept: `SELECT * FROM docugen.Reports FOR SYSTEM_TIME ALL WHERE ReportKey = N'sales-by-region'`.
+To change a report, `UPDATE` its rows. To retire one without deleting it, set `Reports.IsActive = 0`. Deleting a `Reports` row also deletes its parameters, columns and PDF settings. All four tables are system-versioned, so every earlier version is kept: `SELECT * FROM docugen.ReportParameters FOR SYSTEM_TIME ALL WHERE ReportKey = N'sales-by-region'`.
 
-### `docugen.Reports` columns
+### `docugen.Reports`
 
 | Column | Required | Meaning |
 |---|---|---|
@@ -200,36 +211,60 @@ To change a report, `UPDATE` its row. To retire one without deleting it, set `Is
 | `Name`, `Description` | `Name` | Shown by `ListReports` / `GetReport` and in PDFs. |
 | `DataSource` | yes | A name under `Docugen:DataSources` in configuration. Connection strings stay in configuration, never in the table. |
 | `CommandType` | | `Text` (default) or `StoredProcedure`. With `StoredProcedure`, `Query` holds the procedure name. |
-| `Query` | yes | The SQL, with `@Parameter` placeholders. Every placeholder must be declared in `Parameters`. |
+| `Query` | yes | The SQL, with `@Parameter` placeholders. Every placeholder needs a `ReportParameters` row. |
 | `CountQuery` | | `SELECT COUNT(*) …` with the same filters. Gives exact progress, and over-limit exports fail before the main query runs. |
 | `CommandTimeoutSeconds` | | Defaults to `Limits:DefaultCommandTimeoutSeconds` (60). |
-| `AllowedRoles` | | Comma-separated roles, e.g. `Sales,Finance`. `NULL` lets any signed-in caller run the report. |
 | `Formats` | | Comma-separated, default `pdf,xlsx,csv`. |
-| `Parameters` | | JSON array; see below. |
-| `Columns` | | JSON array of `{ "field", "header", "format", "width" }`: output order, headers, Excel number formats and widths. `NULL` exports every column the query returns, with its SQL name as the header. |
 | `FileName` | | Download name without extension. Supports `{Param}`, `{Param:format}` and `{Now:format}`. |
-| `Culture` | | Number and date formatting in PDFs, e.g. `id-ID`. Defaults to `Docugen:DefaultCulture`. |
-| `PdfTemplate` | | Liquid/HTML template. `NULL` uses the built-in table layout. |
-| `PdfPageSize`, `PdfLandscape`, `PdfMargin`, `PdfShowPageNumbers` | | Defaults `A4`, `0`, `15mm`, `1`. |
-| `PdfMaxRows` | | Overrides `Limits:MaxPdfRows` for this report. |
 | `IsActive` | | `0` hides the report. |
 
-The table rejects a malformed `ReportKey` and invalid JSON when you insert. Everything else (the data source exists, every `@Param` is declared, defaults match their types, the template compiles, no unknown JSON properties such as a misspelt `"lable"`) is checked by Docugen and reported in `docugen.ReportValidation`.
+### `docugen.ReportParameters`
+
+| Column | Required | Meaning |
+|---|---|---|
+| `ReportKey`, `Name` | yes | The report, and the parameter name as used in the SQL, without the `@`. |
+| `SortOrder` | | Order in `GetReport` and in PDFs' `parameter_list`. |
+| `Type` | | One of the types below; default `string`. |
+| `IsRequired` | | `1` rejects calls that leave the parameter out. |
+| `Label`, `Description` | | Shown to people; `Label` defaults to `Name`. |
+| `DefaultValue` | | Used when the caller leaves the parameter out, written as text: `100`, `2026-01-31`, `true`, `North`; for lists, `1,2,3`. |
+| `MaxLength`, `AllowedValues` | | For `string`: a length limit, and a comma-separated list of allowed values such as `North,South,East,West`. |
+
+### `docugen.ReportColumns`
+
+| Column | Required | Meaning |
+|---|---|---|
+| `ReportKey`, `Field` | yes | The report, and the column name as the query returns it. |
+| `SortOrder` | | Output order. |
+| `Header` | | Column header; defaults to `Field`. |
+| `Format` | | Excel number format, e.g. `#,##0.00` or `dd-mmm-yyyy`. |
+| `Width` | | Excel column width in characters. |
+
+### `docugen.ReportPdfSettings`
+
+| Column | Default | Meaning |
+|---|---|---|
+| `ReportKey` | | The report. |
+| `Template` | built-in table layout | Liquid/HTML template; see [PDF templates](#pdf-templates). |
+| `PageSize`, `Landscape`, `Margin` | `A4`, `0`, `15mm` | Paper format, orientation and the margin on every edge. |
+| `MaxRows` | `Limits:MaxPdfRows` (5,000) | Most rows a PDF of this report may have. |
+| `ShowPageNumbers` | `1` | "Page X of Y" in the footer. |
+| `Culture` | `Docugen:DefaultCulture` | Number and date formatting in the PDF, e.g. `id-ID`. |
+
+The tables reject a malformed `ReportKey` and an unknown parameter `Type` when you insert. Everything else (the data source exists, every `@Param` has a parameter row, defaults match their types, the template compiles) is checked by Docugen and reported in `docugen.ReportValidation`.
 
 ### Parameter types
 
-Each entry in `Parameters` is `{ "name", "type", "required", "label", "description", "default", "maxLength", "allowedValues" }`.
-
 | Type | Value in the request | Sent to SQL Server as |
 |---|---|---|
-| `string` | `"text"` (checked against `maxLength` and `allowedValues`) | `nvarchar(4000)` |
+| `string` | `"text"` (checked against `MaxLength` and `AllowedValues`) | `nvarchar(4000)` |
 | `int`, `long`, `decimal` | number, or a numeric string | `int`, `bigint`, `decimal` |
 | `bool` | `true` / `false` | `bit` |
 | `date` | `"2026-01-31"` | `date` |
 | `datetime` | `"2026-01-31T13:45:00"` | `datetime2` |
 | `int[]`, `string[]` | `[1, 2, 3]` | JSON string; read it with `OPENJSON(@Ids)` |
 
-A parameter the caller leaves out is passed as `NULL` (or its `default`, if one is set). This makes optional filters straightforward:
+A parameter the caller leaves out is passed as `NULL` (or its `DefaultValue`, if one is set). This makes optional filters straightforward:
 
 ```sql
 WHERE o.OrderDate BETWEEN @FromDate AND @ToDate
@@ -238,7 +273,6 @@ WHERE o.OrderDate BETWEEN @FromDate AND @ToDate
 ```
 
 gRPC sends numbers as doubles, so whole numbers above 2^53 should be sent as strings (`"9007199254740993"`), which every numeric type accepts.
-
 ## PDF templates
 
 Templates use [Liquid](https://shopify.github.io/liquid/) syntax, rendered by [Fluid](https://github.com/sebastienros/fluid), and are printed by headless Chromium. That means ordinary HTML and CSS work, including `@page`, `break-before: page` and table headers that repeat on every page. **Every `{{ value }}` is HTML-encoded automatically.** Use `{{ value | raw }}` only for trusted content such as the shared CSS.
@@ -256,15 +290,15 @@ Templates use [Liquid](https://shopify.github.io/liquid/) syntax, rendered by [F
 
 Put CSS and SVG in `ReportAssets.TextContent`, and PNG, JPEG and font files in `BinaryContent`. Useful filters: `format_number: "N2"` and `format_date: "dd MMM yyyy"`, which both use .NET format strings and the report's culture. Also `plus` for running totals, and `default`. The `sales-orders` sample has a complete template with summary cards and a totals row.
 
-Chromium runs with JavaScript disabled and **all network requests blocked**. Put images, fonts and CSS in `ReportAssets` rather than linking to URLs. Page numbers ("Page X of Y") are added in the footer unless `PdfShowPageNumbers` is `0`.
+Chromium runs with JavaScript disabled and **all network requests blocked**. Put images, fonts and CSS in `ReportAssets` rather than linking to URLs. Page numbers ("Page X of Y") are added in the footer unless `ReportPdfSettings.ShowPageNumbers` is `0`.
 
 ## gRPC API
 
-Package `docugen.v1`; the full contract with comments is in [docugen.proto](src/Docugen.Contracts/Protos/docugen/v1/docugen.proto). Every call needs a bearer token except `grpc.health.v1.Health`.
+Package `docugen.v1`; the full contract with comments is in [docugen.proto](src/Docugen.Contracts/Protos/docugen/v1/docugen.proto). Every call needs an API key in the `x-api-key` metadata except `grpc.health.v1.Health`.
 
 | Service / method | Description |
 |---|---|
-| `ReportService/ListReports` | Reports the caller may run |
+| `ReportService/ListReports` | The active reports |
 | `ReportService/GetReport` | Parameters, formats and columns of one report (the SQL is not exposed); `exact_progress` tells whether it has a count query |
 | `ExportService/Export` | Runs a report. Streams `progress` messages, then one `file` message (name, content type, size, row count, export id), then 64 KiB `chunk`s |
 | `grpc.health.v1.Health/Check` | Checks the store and every data source can be reached |
@@ -276,7 +310,7 @@ Errors before the export starts:
 | Status code | When |
 |---|---|
 | `INVALID_ARGUMENT` | Missing or unsupported format, or unknown, missing or invalid parameters. The details carry a `google.rpc.BadRequest` with one violation per field (`parameters.FromDate`, `format`) |
-| `UNAUTHENTICATED` / `PERMISSION_DENIED` | No valid token / the caller has none of the report's `AllowedRoles` |
+| `UNAUTHENTICATED` | The `x-api-key` metadata is missing or holds an unknown key |
 | `NOT_FOUND` | Unknown report |
 | `RESOURCE_EXHAUSTED` | Too many exports are running and waiting on this instance (`Limits:MaxConcurrentExports`, `Limits:MaxQueuedExports`); retry with backoff |
 
@@ -286,7 +320,7 @@ Errors while it runs carry a `google.rpc.ErrorInfo` with domain `docugen`, the r
 |---|---|---|
 | `FAILED_PRECONDITION` | `TOO_MANY_ROWS` | More rows than the format allows (PDF limit, Excel's 1,048,575 rows, or `Limits:MaxRows`) |
 | `DEADLINE_EXCEEDED` | `QUERY_TIMEOUT` | The SQL query took longer than its command timeout |
-| `INTERNAL` | `DEFINITION_MISMATCH` | `Columns` lists a field the query does not return |
+| `INTERNAL` | `DEFINITION_MISMATCH` | `ReportColumns` lists a field the query does not return |
 | `INTERNAL` | `INTERNAL` | Anything else, e.g. PDF printing took longer than `Pdf:RenderTimeoutSeconds`; the full error is in the export log |
 
 A call cancelled by the caller, or whose deadline passes, ends with the usual `CANCELLED` / `DEADLINE_EXCEEDED` and is logged as `Cancelled`.
@@ -295,7 +329,7 @@ A call cancelled by the caller, or whose deadline passes, ends with the usual `C
 
 Every `Export` call that gets a slot is recorded in the store, whether it succeeds or not:
 
-- **`docugen.Exports`**: one row per export: report, format, parameter values, who asked (`RequestedBy`, `CallerId`), status (`Running`, `Succeeded`, `Failed`, `Cancelled`), rows, file size, error, start time and duration.
+- **`docugen.Exports`**: one row per export: report, format, parameter values, which application asked (`RequestedBy`: the name of its API key), status (`Running`, `Succeeded`, `Failed`, `Cancelled`), rows, file size, error, start time and duration.
 - **`docugen.ExportEvents`**: what happened and when: `Started`, `CountingRows`, `Counted`, `Querying`, `WritingRows`, `Finalizing`, `Generated`, then `Sent` / `Failed` / `Cancelled`. Failures carry the full exception text here; callers only see a short message.
 - **`docugen.ExportTimeline`**: a view of the two side by side.
 
@@ -326,15 +360,11 @@ Settings live in `appsettings.json` and can be overridden by environment variabl
 ```jsonc
 {
   "Kestrel": { "EndpointDefaults": { "Protocols": "Http2" } },   // gRPC without TLS; with TLS use Http1AndHttp2
-  "Authentication": {
-    "Schemes": {
-      "Bearer": {                                                 // e.g. Microsoft Entra ID
-        "Authority": "https://login.microsoftonline.com/<tenant-id>/v2.0",
-        "ValidAudiences": ["api://docugen"]
-      }
-    }
-  },
   "Docugen": {
+    "ApiKeys": {                                                // one per calling application; keep the values in secrets, not here
+      "BillingApp": "<secret>",
+      "HrPortal": "<secret>"
+    },
     "Store": {                                                    // Docugen's own database
       "Provider": "SqlServer",
       "ConnectionString": "Server=sql01;Database=Docugen;Authentication=Active Directory Default;Encrypt=True"
@@ -359,14 +389,15 @@ Settings live in `appsettings.json` and can be overridden by environment variabl
 }
 ```
 
-The role check uses the token's role claims (`roles` or `role`). For Entra ID, define app roles such as `Sales` and `Finance` on the API's app registration and assign them to users, groups or calling applications.
+Each calling application gets its own entry in `Docugen:ApiKeys`: the name is what the export log shows as `RequestedBy`, the value is a random secret of at least 16 characters. To add an application, add a key and restart the service; to revoke one, remove its key. Set keys through environment variables (`Docugen__ApiKeys__BillingApp`), a key vault or `dotnet user-secrets`, never in `appsettings.json`.
 
 ## Security checklist
 
-- **Whoever can write `docugen.Reports` can make Docugen run any SQL its data-source logins allow.** Grant `INSERT`/`UPDATE` on `Reports` and `ReportAssets` to report authors only, and review changes (the table's history shows who changed what, and when).
-- **A report with no `AllowedRoles` can be run by any caller with a valid token for Docugen.** With many applications calling Docugen, give every report roles, and only assign roles to the applications that need them.
+- **Whoever can write `docugen.Reports` can make Docugen run any SQL its data-source logins allow.** Grant `INSERT`/`UPDATE`/`DELETE` on the `Report*` tables and `ReportAssets` to report authors only, and review changes (the history tables show what changed and when).
+- **Every application with an API key can run every report.** Give keys only to applications that should see the data behind all the reports, give each application its own key, and remove a key as soon as an application no longer needs it.
+- Treat API keys like passwords: random, at least 32 characters for production, stored in a secret store on both sides, and sent only over TLS (terminate TLS in front of Docugen).
 - Connect each data source with a **read-only SQL login** (`db_datareader`, or `EXECUTE` on specific procedures only). Add `ApplicationIntent=ReadOnly` to send queries to a readable secondary.
-- Keep the store in its own database (or at least its own schema and login). The service's store login needs `SELECT` on `Reports` and `ReportAssets` and read/write on `ReportValidation`, `Exports` and `ExportEvents`; it should not be able to read the business data.
+- Keep the store in its own database (or at least its own schema and login). The service's store login needs `SELECT` on the `Report*` tables and `ReportAssets` and read/write on `ReportValidation`, `Exports` and `ExportEvents`; it should not be able to read the business data.
 - Keep connection strings out of source control and out of the store: use environment variables, a key vault or `dotnet user-secrets`.
 - Text in CSV files that starts with `=`, `+`, `-`, `@`, a tab or a carriage return gets an apostrophe in front (protection against CSV/formula injection). Numbers are left untouched. XLSX cells are typed, so the problem does not arise there.
 - PDF templates cannot run JavaScript or reach the network, and data values are HTML-encoded.
@@ -376,8 +407,7 @@ The role check uses the token's role claims (`roles` or `role`). For Entra ID, d
 ```bash
 docker build -t docugen .
 docker run -p 8080:8080 \
-  -e Authentication__Schemes__Bearer__Authority=https://login.microsoftonline.com/<tenant-id>/v2.0 \
-  -e Authentication__Schemes__Bearer__ValidAudiences__0=api://docugen \
+  -e Docugen__ApiKeys__BillingApp="<secret>" \
   -e Docugen__Store__ConnectionString="Server=...;Database=Docugen;..." \
   -e Docugen__DataSources__SalesDb__ConnectionString="Server=...;Database=Sales;..." \
   docugen
@@ -403,6 +433,7 @@ dotnet test        # unit, renderer, exporter, gRPC and SQL Server integration t
 
 ## Roadmap
 
+- Per-application report access (which API key may run which reports), and sign-in with Entra ID instead of API keys when needed.
 - Per-application limits, so one busy caller cannot take every export slot.
 - Metrics and tracing (OpenTelemetry): export duration, failures and slot waits per report and per caller.
 - Publish `Docugen.Contracts` as a NuGet package for .NET callers.

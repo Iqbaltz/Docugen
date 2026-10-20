@@ -1,16 +1,15 @@
 -- Sample reports and template assets for the Docugen store (SQL Server). The reports read the demo sales
 -- database (samples/sqlserver/seed.sql) through the SalesDb data source. Safe to re-run: the samples are replaced.
 --   sqlcmd -S "(localdb)\MSSQLLocalDB" -E -d Docugen -i samples/sqlserver/sample-reports.sql
--- Copy one of these INSERTs as the starting point for a new report. Columns left out take their defaults
--- (PdfPageSize A4, PdfMargin 15mm, IsActive 1, ...); see db/sqlserver/docugen-store.sql.
+-- Copy these as the starting point for a new report. Columns left out take their defaults; see
+-- db/sqlserver/docugen-store.sql.
 
+-- Deleting a report also deletes its parameters, columns and PDF settings.
 DELETE FROM docugen.Reports WHERE ReportKey IN (N'customer-list', N'sales-orders');
 DELETE FROM docugen.ReportAssets WHERE FileName IN (N'logo.svg', N'report.css');
 
--- Customer List: All customers with their region and contact email.
-INSERT INTO docugen.Reports
-    (ReportKey, Name, Description, DataSource, Query, CountQuery, CommandTimeoutSeconds, AllowedRoles, Formats,
-     Parameters, Columns, FileName, Culture, PdfTemplate, PdfMaxRows)
+-- Customer List: every column the query returns, the built-in PDF layout, no parameters.
+INSERT INTO docugen.Reports (ReportKey, Name, Description, DataSource, Query, FileName)
 VALUES (
     N'customer-list',
     N'Customer List',
@@ -25,21 +24,10 @@ VALUES (
 FROM Customers c
 JOIN Regions r ON r.Id = c.RegionId
 ORDER BY c.Name',
-    NULL,
-    NULL,
-    NULL,
-    N'pdf,xlsx,csv',
-    NULL,
-    NULL,
-    N'customers-{Now:yyyyMMdd}',
-    NULL,
-    NULL,
-    NULL);
+    N'customers-{Now:yyyyMMdd}');
 
--- Sales Orders: Orders placed in the selected period, with totals.
-INSERT INTO docugen.Reports
-    (ReportKey, Name, Description, DataSource, Query, CountQuery, CommandTimeoutSeconds, AllowedRoles, Formats,
-     Parameters, Columns, FileName, Culture, PdfTemplate, PdfMaxRows)
+-- Sales Orders: parameters, chosen columns, a count query for exact progress, and a PDF template.
+INSERT INTO docugen.Reports (ReportKey, Name, Description, DataSource, Query, CountQuery, CommandTimeoutSeconds, FileName)
 VALUES (
     N'sales-orders',
     N'Sales Orders',
@@ -67,22 +55,25 @@ WHERE o.OrderDate >= @FromDate
   AND o.OrderDate <= @ToDate
   AND (@Region IS NULL OR r.Name = @Region)',
     60,
-    N'Sales,Finance',
-    N'pdf,xlsx,csv',
-    N'[
-  {"name":"FromDate","label":"From","type":"date","required":true},
-  {"name":"ToDate","label":"To","type":"date","required":true},
-  {"name":"Region","label":"Region","type":"string","allowedValues":["North","South","East","West"]}
-]',
-    N'[
-  {"field":"OrderDate","header":"Order Date","format":"dd-mmm-yyyy","width":14},
-  {"field":"OrderNumber","header":"Order No."},
-  {"field":"Customer","header":"Customer","width":28},
-  {"field":"Region","header":"Region"},
-  {"field":"Quantity","header":"Qty","format":"#,##0"},
-  {"field":"Total","header":"Total","format":"#,##0.00","width":14}
-]',
-    N'sales-orders-{FromDate:yyyyMMdd}-{ToDate:yyyyMMdd}',
+    N'sales-orders-{FromDate:yyyyMMdd}-{ToDate:yyyyMMdd}');
+
+INSERT INTO docugen.ReportParameters (ReportKey, Name, SortOrder, Type, IsRequired, Label, AllowedValues) VALUES
+    (N'sales-orders', N'FromDate', 1, N'date',   1, N'From',   NULL),
+    (N'sales-orders', N'ToDate',   2, N'date',   1, N'To',     NULL),
+    (N'sales-orders', N'Region',   3, N'string', 0, N'Region', N'North,South,East,West');
+
+INSERT INTO docugen.ReportColumns (ReportKey, Field, SortOrder, Header, Format, Width) VALUES
+    (N'sales-orders', N'OrderDate',   1, N'Order Date', N'dd-mmm-yyyy', 14),
+    (N'sales-orders', N'OrderNumber', 2, N'Order No.',  NULL,           NULL),
+    (N'sales-orders', N'Customer',    3, N'Customer',   NULL,           28),
+    (N'sales-orders', N'Region',      4, N'Region',     NULL,           NULL),
+    (N'sales-orders', N'Quantity',    5, N'Qty',        N'#,##0',       NULL),
+    (N'sales-orders', N'Total',       6, N'Total',      N'#,##0.00',    14);
+
+INSERT INTO docugen.ReportPdfSettings (ReportKey, MaxRows, Culture, Template)
+VALUES (
+    N'sales-orders',
+    5000,
     N'en-US',
     N'<!DOCTYPE html>
 <html>
@@ -147,8 +138,7 @@ WHERE o.OrderDate >= @FromDate
   </table>
 </body>
 </html>
-',
-    5000);
+');
 
 -- Shared template assets: assets.logo_svg and assets.report_css in templates.
 INSERT INTO docugen.ReportAssets (FileName, TextContent) VALUES (N'logo.svg', N'<svg xmlns="http://www.w3.org/2000/svg" width="200" height="40" viewBox="0 0 200 40">

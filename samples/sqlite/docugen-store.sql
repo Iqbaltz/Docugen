@@ -2,6 +2,8 @@
 -- Mirrors db/sqlserver/docugen-store.sql and samples/sqlserver/sample-reports.sql. Sqlite has no schemas, so the
 -- tables are unqualified. Docugen runs this when Docugen:Store:SeedScript points here and the file does not exist.
 
+PRAGMA foreign_keys = ON;
+
 CREATE TABLE Reports (
   ReportKey             TEXT    NOT NULL PRIMARY KEY,
   Name                  TEXT    NOT NULL,
@@ -11,21 +13,46 @@ CREATE TABLE Reports (
   Query                 TEXT    NOT NULL,
   CountQuery            TEXT    NULL,
   CommandTimeoutSeconds INTEGER NULL,
-  AllowedRoles          TEXT    NULL,
   Formats               TEXT    NOT NULL DEFAULT 'pdf,xlsx,csv',
-  Parameters            TEXT    NULL CHECK (Parameters IS NULL OR json_valid(Parameters)),
-  Columns               TEXT    NULL CHECK (Columns IS NULL OR json_valid(Columns)),
   FileName              TEXT    NULL,
-  Culture               TEXT    NULL,
-  PdfTemplate           TEXT    NULL,
-  PdfPageSize           TEXT    NOT NULL DEFAULT 'A4',
-  PdfLandscape          INTEGER NOT NULL DEFAULT 0,
-  PdfMargin             TEXT    NOT NULL DEFAULT '15mm',
-  PdfMaxRows            INTEGER NULL,
-  PdfShowPageNumbers    INTEGER NOT NULL DEFAULT 1,
   IsActive              INTEGER NOT NULL DEFAULT 1,
   UpdatedAtUtc          TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
   UpdatedBy             TEXT    NOT NULL DEFAULT 'sqlite'
+);
+
+CREATE TABLE ReportParameters (
+  ReportKey     TEXT    NOT NULL REFERENCES Reports (ReportKey) ON DELETE CASCADE,
+  Name          TEXT    NOT NULL,
+  SortOrder     INTEGER NOT NULL DEFAULT 0,
+  Type          TEXT    NOT NULL DEFAULT 'string',
+  IsRequired    INTEGER NOT NULL DEFAULT 0,
+  Label         TEXT    NULL,
+  Description   TEXT    NULL,
+  DefaultValue  TEXT    NULL,
+  MaxLength     INTEGER NULL,
+  AllowedValues TEXT    NULL,
+  PRIMARY KEY (ReportKey, Name)
+);
+
+CREATE TABLE ReportColumns (
+  ReportKey TEXT    NOT NULL REFERENCES Reports (ReportKey) ON DELETE CASCADE,
+  Field     TEXT    NOT NULL,
+  SortOrder INTEGER NOT NULL DEFAULT 0,
+  Header    TEXT    NULL,
+  Format    TEXT    NULL,
+  Width     REAL    NULL,
+  PRIMARY KEY (ReportKey, Field)
+);
+
+CREATE TABLE ReportPdfSettings (
+  ReportKey       TEXT    NOT NULL PRIMARY KEY REFERENCES Reports (ReportKey) ON DELETE CASCADE,
+  Template        TEXT    NULL,
+  PageSize        TEXT    NOT NULL DEFAULT 'A4',
+  Landscape       INTEGER NOT NULL DEFAULT 0,
+  Margin          TEXT    NOT NULL DEFAULT '15mm',
+  MaxRows         INTEGER NULL,
+  ShowPageNumbers INTEGER NOT NULL DEFAULT 1,
+  Culture         TEXT    NULL
 );
 
 CREATE TABLE ReportAssets (
@@ -82,10 +109,8 @@ SELECT x.ExportId, x.ReportKey, x.Format, x.RequestedBy, x.Status, x.StartedAtUt
 FROM Exports x
 JOIN ExportEvents e ON e.ExportId = x.ExportId;
 
--- Customer List: All customers with their region and contact email.
-INSERT INTO Reports
-    (ReportKey, Name, Description, DataSource, Query, CountQuery, CommandTimeoutSeconds, AllowedRoles, Formats,
-     Parameters, Columns, FileName, Culture, PdfTemplate, PdfMaxRows)
+-- Customer List: every column the query returns, the built-in PDF layout, no parameters.
+INSERT INTO Reports (ReportKey, Name, Description, DataSource, Query, FileName)
 VALUES (
     'customer-list',
     'Customer List',
@@ -100,21 +125,10 @@ VALUES (
 FROM Customers c
 JOIN Regions r ON r.Id = c.RegionId
 ORDER BY c.Name',
-    NULL,
-    NULL,
-    NULL,
-    'pdf,xlsx,csv',
-    NULL,
-    NULL,
-    'customers-{Now:yyyyMMdd}',
-    NULL,
-    NULL,
-    NULL);
+    'customers-{Now:yyyyMMdd}');
 
--- Sales Orders: Orders placed in the selected period, with totals.
-INSERT INTO Reports
-    (ReportKey, Name, Description, DataSource, Query, CountQuery, CommandTimeoutSeconds, AllowedRoles, Formats,
-     Parameters, Columns, FileName, Culture, PdfTemplate, PdfMaxRows)
+-- Sales Orders: parameters, chosen columns, a count query for exact progress, and a PDF template.
+INSERT INTO Reports (ReportKey, Name, Description, DataSource, Query, CountQuery, CommandTimeoutSeconds, FileName)
 VALUES (
     'sales-orders',
     'Sales Orders',
@@ -142,22 +156,25 @@ WHERE o.OrderDate >= @FromDate
   AND o.OrderDate <= @ToDate
   AND (@Region IS NULL OR r.Name = @Region)',
     60,
-    'Sales,Finance',
-    'pdf,xlsx,csv',
-    '[
-  {"name":"FromDate","label":"From","type":"date","required":true},
-  {"name":"ToDate","label":"To","type":"date","required":true},
-  {"name":"Region","label":"Region","type":"string","allowedValues":["North","South","East","West"]}
-]',
-    '[
-  {"field":"OrderDate","header":"Order Date","format":"dd-mmm-yyyy","width":14},
-  {"field":"OrderNumber","header":"Order No."},
-  {"field":"Customer","header":"Customer","width":28},
-  {"field":"Region","header":"Region"},
-  {"field":"Quantity","header":"Qty","format":"#,##0"},
-  {"field":"Total","header":"Total","format":"#,##0.00","width":14}
-]',
-    'sales-orders-{FromDate:yyyyMMdd}-{ToDate:yyyyMMdd}',
+    'sales-orders-{FromDate:yyyyMMdd}-{ToDate:yyyyMMdd}');
+
+INSERT INTO ReportParameters (ReportKey, Name, SortOrder, Type, IsRequired, Label, AllowedValues) VALUES
+    ('sales-orders', 'FromDate', 1, 'date',   1, 'From',   NULL),
+    ('sales-orders', 'ToDate',   2, 'date',   1, 'To',     NULL),
+    ('sales-orders', 'Region',   3, 'string', 0, 'Region', 'North,South,East,West');
+
+INSERT INTO ReportColumns (ReportKey, Field, SortOrder, Header, Format, Width) VALUES
+    ('sales-orders', 'OrderDate',   1, 'Order Date', 'dd-mmm-yyyy', 14),
+    ('sales-orders', 'OrderNumber', 2, 'Order No.',  NULL,          NULL),
+    ('sales-orders', 'Customer',    3, 'Customer',   NULL,          28),
+    ('sales-orders', 'Region',      4, 'Region',     NULL,          NULL),
+    ('sales-orders', 'Quantity',    5, 'Qty',        '#,##0',       NULL),
+    ('sales-orders', 'Total',       6, 'Total',      '#,##0.00',    14);
+
+INSERT INTO ReportPdfSettings (ReportKey, MaxRows, Culture, Template)
+VALUES (
+    'sales-orders',
+    5000,
     'en-US',
     '<!DOCTYPE html>
 <html>
@@ -222,8 +239,7 @@ WHERE o.OrderDate >= @FromDate
   </table>
 </body>
 </html>
-',
-    5000);
+');
 
 -- Shared template assets: assets.logo_svg and assets.report_css in templates.
 INSERT INTO ReportAssets (FileName, TextContent) VALUES ('logo.svg', '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="40" viewBox="0 0 200 40">

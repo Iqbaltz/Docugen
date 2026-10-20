@@ -1,4 +1,4 @@
--- Demo schema and data for SQL Server (used by the integration tests). Mirrors samples/sqlite/seed.sql.
+-- Demo schema and data for SQL Server (local development on LocalDB and the integration tests). Mirrors samples/sqlite/seed.sql.
 CREATE TABLE dbo.Regions (
   Id INT NOT NULL PRIMARY KEY,
   Name NVARCHAR(50) NOT NULL

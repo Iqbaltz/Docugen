@@ -23,6 +23,12 @@ public abstract class ReportData : IAsyncDisposable
     /// <summary>Maximum rows allowed; reading past it throws <see cref="ReportLimitExceededException"/>.</summary>
     public long? RowLimit { get; set; }
 
+    /// <summary>Called with the running total after each row is read.</summary>
+    public Action<long>? RowRead { get; set; }
+
+    /// <summary>Called once every row has been read.</summary>
+    public Action? ReadCompleted { get; set; }
+
     public async IAsyncEnumerable<object?[]> ReadRowsAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         if (_read)
@@ -39,8 +45,11 @@ public abstract class ReportData : IAsyncDisposable
             }
 
             RowCount++;
+            RowRead?.Invoke(RowCount);
             yield return row;
         }
+
+        ReadCompleted?.Invoke();
     }
 
     protected abstract IAsyncEnumerable<object?[]> ReadRowsCoreAsync(CancellationToken cancellationToken);

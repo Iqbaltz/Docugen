@@ -86,6 +86,28 @@ public sealed class SqlReportDataSourceTests
     }
 
     [Fact]
+    public async Task Counts_rows_with_the_count_query_and_the_same_parameters()
+    {
+        var report = TestSupport.Report() with
+        {
+            Query = OrdersQuery,
+            CountQuery = "SELECT COUNT(*) FROM Orders o JOIN Customers c ON c.Id = o.CustomerId JOIN Regions r ON r.Id = c.RegionId WHERE o.OrderDate >= @FromDate AND o.OrderDate <= @ToDate AND (@Region IS NULL OR r.Name = @Region)",
+        };
+        BoundParameter[] parameters =
+        [
+            new("FromDate", ParameterType.Date, new DateOnly(2026, 1, 1)),
+            new("ToDate", ParameterType.Date, new DateOnly(2026, 3, 31)),
+            new("Region", ParameterType.String, "East"),
+        ];
+
+        var count = await _dataSource.CountAsync(report, parameters, TestContext.Current.CancellationToken);
+        var rows = await ReadAsync(report, new DateOnly(2026, 1, 1), new DateOnly(2026, 3, 31), "East");
+
+        Assert.Equal(rows.Rows.Count, count);
+        Assert.True(count > 0);
+    }
+
+    [Fact]
     public async Task Passes_array_parameters_as_json()
     {
         var report = TestSupport.Report() with { Query = "SELECT Name FROM Regions WHERE Id IN (SELECT value FROM json_each(@Ids)) ORDER BY Id" };

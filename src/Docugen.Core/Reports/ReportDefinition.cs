@@ -1,9 +1,7 @@
-using System.Text.Json.Serialization;
-
 namespace Docugen.Core.Reports;
 
 /// <summary>
-/// A named, reviewed report: the SQL it runs, the parameters callers may supply,
+/// A named report registered in the <c>Reports</c> table: the SQL it runs, the parameters callers may supply,
 /// who may run it and how each output format is produced.
 /// </summary>
 public sealed record ReportDefinition
@@ -19,12 +17,18 @@ public sealed record ReportDefinition
 
     public ReportCommandType CommandType { get; init; } = ReportCommandType.Text;
 
-    /// <summary>SQL text or stored procedure name. Loaded from <c>query.sql</c> when not given inline.</summary>
+    /// <summary>SQL text or stored procedure name.</summary>
     public string Query { get; init; } = "";
+
+    /// <summary>
+    /// Optional SQL returning the number of rows <see cref="Query"/> will produce (same parameters). When set, export
+    /// progress is exact and over-limit exports fail before the main query runs.
+    /// </summary>
+    public string? CountQuery { get; init; }
 
     public int? CommandTimeoutSeconds { get; init; }
 
-    /// <summary>Roles allowed to run the report. Empty means every authenticated user.</summary>
+    /// <summary>Roles allowed to run the report. Empty means every authenticated caller.</summary>
     public IReadOnlyList<string> AllowedRoles { get; init; } = [];
 
     public IReadOnlyList<OutputFormat> Formats { get; init; } = [OutputFormat.Pdf, OutputFormat.Xlsx, OutputFormat.Csv];
@@ -45,8 +49,7 @@ public sealed record ReportDefinition
 
     public PdfOptions Pdf { get; init; } = new();
 
-    /// <summary>Contents of the PDF template file, loaded by the catalog. Null means the built-in template.</summary>
-    [JsonIgnore]
+    /// <summary>Liquid source of the PDF template. Null means the built-in table template.</summary>
     public string? PdfTemplateSource { get; init; }
 
     public bool Supports(OutputFormat format) => Formats.Contains(format);

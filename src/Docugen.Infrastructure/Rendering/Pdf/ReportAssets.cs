@@ -1,15 +1,22 @@
-using Docugen.Core;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Options;
+using System.Text;
 
 namespace Docugen.Infrastructure.Rendering.Pdf;
 
+/// <summary>Shared template assets, exposed to PDF templates as <c>assets.&lt;key&gt;</c>.</summary>
+public interface IReportAssets
+{
+    IReadOnlyDictionary<string, object?> Values { get; }
+}
+
+/// <summary>A row of the <c>ReportAssets</c> table: text content (CSS, SVG) or binary content (PNG, fonts).</summary>
+public sealed record ReportAsset(string FileName, string? Text, byte[]? Data);
+
 /// <summary>
-/// Shared template assets from <c>{ReportsPath}/_assets</c>. Images and fonts become data URIs and stylesheets
-/// become text, so PDF rendering never needs network or file access. Keys are file names with dots and dashes
-/// replaced by underscores: <c>logo.svg</c> is <c>assets.logo_svg</c>.
+/// A fixed set of template assets. Images and fonts become data URIs and stylesheets become text, so PDF rendering
+/// never needs network or file access. Keys are file names with dots, dashes and spaces replaced by underscores:
+/// <c>logo.svg</c> is <c>assets.logo_svg</c>.
 /// </summary>
-public sealed class ReportAssets
+public sealed class ReportAssets : IReportAssets
 {
     private static readonly Dictionary<string, string> BinaryTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -27,28 +34,22 @@ public sealed class ReportAssets
 
     private static readonly HashSet<string> TextTypes = new(StringComparer.OrdinalIgnoreCase) { ".css", ".html", ".txt" };
 
-    public ReportAssets(IOptions<DocugenOptions> options, IHostEnvironment environment)
-        : this(Path.Combine(environment.ContentRootPath, options.Value.ReportsPath, "_assets"))
-    {
-    }
+    public static ReportAssets Empty { get; } = new([]);
 
-    internal ReportAssets(string folder)
+    public ReportAssets(IEnumerable<ReportAsset> assets)
     {
         var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-        if (Directory.Exists(folder))
+        foreach (var asset in assets)
         {
-            foreach (var file in Directory.EnumerateFiles(folder))
+            var extension = Path.GetExtension(asset.FileName);
+            if (BinaryTypes.TryGetValue(extension, out var mediaType))
             {
-                var extension = Path.GetExtension(file);
-                var key = Path.GetFileName(file).Replace('.', '_').Replace('-', '_').Replace(' ', '_');
-                if (BinaryTypes.TryGetValue(extension, out var mediaType))
-                {
-                    values[key] = $"data:{mediaType};base64,{Convert.ToBase64String(File.ReadAllBytes(file))}";
-                }
-                else if (TextTypes.Contains(extension))
-                {
-                    values[key] = File.ReadAllText(file);
-                }
+                var bytes = asset.Data ?? Encoding.UTF8.GetBytes(asset.Text ?? "");
+                values[KeyFor(asset.FileName)] = $"data:{mediaType};base64,{Convert.ToBase64String(bytes)}";
+            }
+            else if (TextTypes.Contains(extension))
+            {
+                values[KeyFor(asset.FileName)] = asset.Text ?? Encoding.UTF8.GetString(asset.Data ?? []);
             }
         }
 
@@ -56,4 +57,13 @@ public sealed class ReportAssets
     }
 
     public IReadOnlyDictionary<string, object?> Values { get; }
+
+    /// <summary>True when templates can use the file: an image, font or stylesheet type.</summary>
+    public static bool IsSupported(string fileName)
+    {
+        var extension = Path.GetExtension(fileName);
+        return BinaryTypes.ContainsKey(extension) || TextTypes.Contains(extension);
+    }
+
+    public static string KeyFor(string fileName) => fileName.Replace('.', '_').Replace('-', '_').Replace(' ', '_');
 }

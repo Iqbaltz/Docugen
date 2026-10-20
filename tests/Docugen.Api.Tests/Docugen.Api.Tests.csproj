@@ -7,12 +7,14 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Grpc.Net.Client" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
     <PackageReference Include="xunit.v3" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Docugen.Api\Docugen.Api.csproj" />
+    <ProjectReference Include="..\..\src\Docugen.Contracts\Docugen.Contracts.csproj" />
   </ItemGroup>
 
   <ItemGroup>

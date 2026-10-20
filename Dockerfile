@@ -3,6 +3,7 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY global.json Directory.Build.props Directory.Packages.props ./
+COPY src/Docugen.Contracts/Docugen.Contracts.csproj src/Docugen.Contracts/
 COPY src/Docugen.Core/Docugen.Core.csproj src/Docugen.Core/
 COPY src/Docugen.Infrastructure/Docugen.Infrastructure.csproj src/Docugen.Infrastructure/
 COPY src/Docugen.Api/Docugen.Api.csproj src/Docugen.Api/
@@ -11,6 +12,7 @@ COPY src/ src/
 RUN dotnet publish src/Docugen.Api/Docugen.Api.csproj -c Release -o /app --no-restore
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+# gRPC over plain HTTP/2 (appsettings.json sets Kestrel to Http2). Terminate TLS at the ingress or load balancer.
 ENV ASPNETCORE_HTTP_PORTS=8080 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 WORKDIR /app
@@ -22,8 +24,8 @@ RUN apt-get update \
     && dotnet Docugen.Api.dll install-browsers --with-deps \
     && rm -rf /var/lib/apt/lists/*
 
-# Report definitions are baked in; mount a volume over /app/reports to manage them separately.
-COPY reports/ ./reports/
+# Report definitions live in the store database (Docugen:Store), not in the image. Files are rendered to the temp
+# folder and deleted once sent; set Docugen__TempPath to use another disk.
 
 USER $APP_UID
 EXPOSE 8080

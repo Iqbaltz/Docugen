@@ -6,7 +6,10 @@ using Microsoft.Extensions.Options;
 
 namespace Docugen.Infrastructure.Data;
 
-/// <summary>Creates Sqlite demo databases from their seed script when the database file does not exist yet.</summary>
+/// <summary>
+/// Creates Sqlite demo databases (data sources and the store) from their seed script when the database file does
+/// not exist yet. Registered before the catalog loads, so a Sqlite store is ready on first start.
+/// </summary>
 internal sealed partial class SqliteSeeder(
     IOptions<DocugenOptions> options,
     IHostEnvironment environment,
@@ -14,7 +17,8 @@ internal sealed partial class SqliteSeeder(
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        foreach (var (name, dataSource) in options.Value.DataSources)
+        var databases = options.Value.DataSources.Prepend(new("Docugen:Store", options.Value.Store));
+        foreach (var (name, dataSource) in databases)
         {
             if (!DbConnectionFactory.IsSqlite(dataSource.Provider) || string.IsNullOrWhiteSpace(dataSource.SeedScript))
             {

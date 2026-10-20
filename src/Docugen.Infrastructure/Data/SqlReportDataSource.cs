@@ -61,6 +61,36 @@ public sealed class SqlReportDataSource(IDbConnectionFactory connections, IOptio
         }
     }
 
+    public async Task<long> CountAsync(ReportDefinition report, IReadOnlyList<BoundParameter> parameters, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(report.CountQuery))
+        {
+            throw new InvalidOperationException($"Report '{report.Key}' has no count query.");
+        }
+
+        await using var connection = connections.Create(report.DataSource);
+        try
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var command = connection.CreateCommand();
+            command.CommandText = report.CountQuery;
+            command.CommandTimeout = report.CommandTimeoutSeconds ?? options.Value.Limits.DefaultCommandTimeoutSeconds;
+            foreach (var parameter in parameters)
+            {
+                command.Parameters.Add(CreateParameter(command, parameter, connection is SqliteConnection));
+            }
+
+            var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            return value is null or DBNull
+                ? throw new ReportDefinitionMismatchException($"The count query of report '{report.Key}' returned no value.")
+                : Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
+        }
+        catch (Exception ex) when (IsTimeout(ex))
+        {
+            throw new ReportQueryTimeoutException(report.Key, ex);
+        }
+    }
+
     internal static bool IsTimeout(Exception exception) => exception is SqlException { Number: -2 };
 
     private static DbParameter CreateParameter(DbCommand command, BoundParameter parameter, bool isSqlite)

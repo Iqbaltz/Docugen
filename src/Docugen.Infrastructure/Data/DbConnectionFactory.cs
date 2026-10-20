@@ -32,17 +32,22 @@ public sealed class DbConnectionFactory : IDbConnectionFactory
             throw new InvalidOperationException($"Data source '{dataSource}' is not configured.");
         }
 
-        if (IsSqlite(config.Provider))
+        return CreateConnection(config.Provider, config.ConnectionString, $"Data source '{dataSource}'");
+    }
+
+    internal static DbConnection CreateConnection(string provider, string connectionString, string description)
+    {
+        if (IsSqlite(provider))
         {
-            return new SqliteConnection(config.ConnectionString);
+            return new SqliteConnection(connectionString);
         }
 
-        if (config.Provider.Equals("SqlServer", StringComparison.OrdinalIgnoreCase))
+        if (provider.Equals("SqlServer", StringComparison.OrdinalIgnoreCase))
         {
-            return new SqlConnection(config.ConnectionString);
+            return new SqlConnection(connectionString);
         }
 
-        throw new InvalidOperationException($"Data source '{dataSource}' uses unknown provider '{config.Provider}'. Use SqlServer or Sqlite.");
+        throw new InvalidOperationException($"{description} uses unknown provider '{provider}'. Use SqlServer or Sqlite.");
     }
 
     internal static bool IsSqlite(string provider) => provider.Equals("Sqlite", StringComparison.OrdinalIgnoreCase);

@@ -13,8 +13,6 @@ internal static class TestSupport
 {
     public static readonly string RepoRoot = FindRepoRoot();
 
-    public static string ReportsPath => Path.Combine(RepoRoot, "reports");
-
     public static ReportDefinition Report(string key = "test-report") => new()
     {
         Key = key,
@@ -38,15 +36,58 @@ internal static class TestSupport
         return Microsoft.Extensions.Options.Options.Create(options);
     }
 
-    /// <summary>Creates a Sqlite database file seeded with the demo data and returns its connection string.</summary>
-    public static string CreateDemoDatabase()
+    /// <summary>Options for a Sqlite store and a Sqlite SalesDb, both freshly seeded.</summary>
+    public static IOptions<DocugenOptions> StoreOptions(Action<DocugenOptions>? configure = null)
+    {
+        var store = CreateStoreDatabase();
+        var sales = CreateDemoDatabase();
+        return Options(o =>
+        {
+            o.Store = new DataSourceOptions { Provider = "Sqlite", ConnectionString = store };
+            o.DataSources["SalesDb"] = new DataSourceOptions { Provider = "Sqlite", ConnectionString = sales };
+            configure?.Invoke(o);
+        });
+    }
+
+    /// <summary>Creates a Sqlite database file seeded with the demo sales data and returns its connection string.</summary>
+    public static string CreateDemoDatabase() => CreateDatabase("samples/sqlite/seed.sql");
+
+    /// <summary>Creates a Sqlite Docugen store with the sample reports and returns its connection string.</summary>
+    public static string CreateStoreDatabase() => CreateDatabase("samples/sqlite/docugen-store.sql");
+
+    public static async Task ExecuteAsync(string connectionString, string sql)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync();
+    }
+
+    public static async Task<List<Dictionary<string, object?>>> QueryAsync(string connectionString, string sql)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await using var reader = await command.ExecuteReaderAsync();
+        var rows = new List<Dictionary<string, object?>>();
+        while (await reader.ReadAsync())
+        {
+            rows.Add(Enumerable.Range(0, reader.FieldCount).ToDictionary(reader.GetName, i => reader.IsDBNull(i) ? null : reader.GetValue(i)));
+        }
+
+        return rows;
+    }
+
+    private static string CreateDatabase(string script)
     {
         var path = Path.Combine(Path.GetTempPath(), $"docugen-test-{Guid.NewGuid():N}.db");
         var connectionString = new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString();
         using var connection = new SqliteConnection(connectionString);
         connection.Open();
         using var command = connection.CreateCommand();
-        command.CommandText = File.ReadAllText(Path.Combine(RepoRoot, "samples", "sqlite", "seed.sql"));
+        command.CommandText = File.ReadAllText(Path.Combine(RepoRoot, script));
         command.ExecuteNonQuery();
         return connectionString;
     }

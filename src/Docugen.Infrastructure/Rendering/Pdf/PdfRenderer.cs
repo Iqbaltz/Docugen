@@ -14,7 +14,7 @@ namespace Docugen.Infrastructure.Rendering.Pdf;
 public sealed class PdfRenderer(
     LiquidTemplateEngine templates,
     ChromiumPdfConverter converter,
-    ReportAssets assets,
+    IReportAssets assets,
     IOptions<DocugenOptions> options) : IDocumentRenderer
 {
     private static readonly Lazy<string> DefaultTemplate = new(LoadDefaultTemplate);

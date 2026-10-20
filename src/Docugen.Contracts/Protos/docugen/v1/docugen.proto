@@ -1,6 +1,7 @@
 // Docugen gRPC API, version 1.
 //
-// Every call needs a bearer token ("authorization: Bearer <token>" metadata) except grpc.health.v1.Health.
+// Every call needs an API key in the "x-api-key" metadata, except grpc.health.v1.Health. A missing or unknown key gets
+// UNAUTHENTICATED.
 // To produce a document, call ExportService/Export: one call streams progress while the report runs, then the file.
 // Docugen keeps no state between calls; run long exports from your own background job and set a deadline that fits.
 
@@ -14,11 +15,11 @@ import "google/protobuf/struct.proto";
 
 // Reports registered in the Docugen store.
 service ReportService {
-  // Lists the reports the caller is allowed to run.
+  // Lists the reports that can be run.
   rpc ListReports (ListReportsRequest) returns (ListReportsResponse);
 
   // Describes one report: its parameters, formats and columns. The SQL is never exposed.
-  // NOT_FOUND for an unknown report, PERMISSION_DENIED without one of its roles.
+  // NOT_FOUND for an unknown report.
   rpc GetReport (GetReportRequest) returns (Report);
 }
 
@@ -31,8 +32,7 @@ service ExportService {
   //
   // Errors before anything runs: INVALID_ARGUMENT for a bad format or parameters (details carry a
   // google.rpc.BadRequest with one violation per field, e.g. "parameters.FromDate"), NOT_FOUND for an unknown
-  // report, PERMISSION_DENIED without one of the report's roles, RESOURCE_EXHAUSTED when too many exports are
-  // running and waiting.
+  // report, RESOURCE_EXHAUSTED when too many exports are running and waiting.
   // Errors while it runs carry a google.rpc.ErrorInfo (domain "docugen") whose reason says why and whose metadata
   // holds the export_id: FAILED_PRECONDITION / TOO_MANY_ROWS, DEADLINE_EXCEEDED / QUERY_TIMEOUT,
   // INTERNAL / DEFINITION_MISMATCH or INTERNAL.

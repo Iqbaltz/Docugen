@@ -8,8 +8,8 @@ using Docugen.Infrastructure.Rendering.Pdf;
 namespace Docugen.Infrastructure.Catalog;
 
 /// <summary>
-/// Checks a report definition before it can be run: the data source exists, every <c>@Param</c> in the SQL is
-/// declared, defaults match their types and the PDF template compiles. Messages name the <c>Reports</c> columns.
+/// Checks a report definition before it can be run: the data source exists, every <c>@Param</c> in the SQL has
+/// a <c>ReportParameters</c> row, defaults match their types and the PDF template compiles. Messages name the tables and columns to fix.
 /// </summary>
 internal static partial class ReportValidator
 {
@@ -56,7 +56,7 @@ internal static partial class ReportValidator
 
         if (report.Culture is { } culture && !IsValidCulture(culture))
         {
-            errors.Add($"Culture '{culture}' is not a known culture.");
+            errors.Add($"ReportPdfSettings.Culture '{culture}' is not a known culture.");
         }
 
         ValidateParameters(report, errors);
@@ -72,13 +72,13 @@ internal static partial class ReportValidator
         {
             if (!IdentifierRegex().IsMatch(parameter.Name ?? ""))
             {
-                errors.Add($"Parameters: name '{parameter.Name}' must be a valid identifier.");
+                errors.Add($"ReportParameters: name '{parameter.Name}' must be a valid identifier (letters, digits, underscores).");
             }
         }
 
         foreach (var duplicate in report.Parameters.GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
         {
-            errors.Add($"Parameters: '{duplicate.Key}' is declared more than once.");
+            errors.Add($"ReportParameters: '{duplicate.Key}' is declared more than once.");
         }
 
         // Binding with no values surfaces defaults that do not match their declared type.
@@ -87,7 +87,7 @@ internal static partial class ReportValidator
         {
             if (binding.Errors.TryGetValue(parameter.Name, out var messages))
             {
-                errors.Add($"Parameters: default for '{parameter.Name}' is invalid: {string.Join(" ", messages)}");
+                errors.Add($"ReportParameters: DefaultValue for '{parameter.Name}' is invalid: {string.Join(" ", messages)}");
             }
         }
     }
@@ -96,17 +96,17 @@ internal static partial class ReportValidator
     {
         if (report.Columns.Any(c => string.IsNullOrWhiteSpace(c.Field)))
         {
-            errors.Add("Columns: every column needs a field.");
+            errors.Add("ReportColumns: every column needs a Field.");
         }
 
         foreach (var duplicate in report.Columns.GroupBy(c => c.Field, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
         {
-            errors.Add($"Columns: '{duplicate.Key}' is listed more than once.");
+            errors.Add($"ReportColumns: '{duplicate.Key}' is listed more than once.");
         }
 
         if (report.Columns.Any(c => c.Width is <= 0 or > 255))
         {
-            errors.Add("Columns: widths must be between 0 and 255.");
+            errors.Add("ReportColumns: Width must be between 0 and 255.");
         }
     }
 
@@ -135,7 +135,7 @@ internal static partial class ReportValidator
         {
             foreach (var name in declared.Where(n => !referenced.Contains(n)).Order(StringComparer.Ordinal))
             {
-                warnings.Add($"Parameter '{name}' is declared but Query never uses it.");
+                warnings.Add($"ReportParameters: '{name}' is declared but Query never uses it.");
             }
         }
     }
@@ -145,7 +145,7 @@ internal static partial class ReportValidator
         var referenced = SqlParameterScanner.FindParameters(sql);
         foreach (var name in referenced.Where(n => !declared.Contains(n)).Order(StringComparer.Ordinal))
         {
-            errors.Add($"{column} uses @{name} but Parameters does not declare it.");
+            errors.Add($"{column} uses @{name} but ReportParameters has no row for it.");
         }
 
         return referenced;
@@ -155,17 +155,17 @@ internal static partial class ReportValidator
     {
         if (!PageSizes.Contains(report.Pdf.PageSize))
         {
-            errors.Add($"PdfPageSize '{report.Pdf.PageSize}' is not supported. Use one of: {string.Join(", ", PageSizes)}.");
+            errors.Add($"ReportPdfSettings.PageSize '{report.Pdf.PageSize}' is not supported. Use one of: {string.Join(", ", PageSizes)}.");
         }
 
         if (report.Pdf.MaxRows is <= 0)
         {
-            errors.Add("PdfMaxRows must be positive.");
+            errors.Add("ReportPdfSettings.MaxRows must be positive.");
         }
 
         if (report.PdfTemplateSource is { } source && !templates.TryCompile(source, out var error))
         {
-            errors.Add($"PdfTemplate does not compile: {error}");
+            errors.Add($"ReportPdfSettings.Template does not compile: {error}");
         }
     }
 

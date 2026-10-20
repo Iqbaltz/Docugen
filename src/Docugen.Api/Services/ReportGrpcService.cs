@@ -1,5 +1,4 @@
 using Docugen.Contracts.V1;
-using Docugen.Core;
 using Grpc.Core;
 using Microsoft.AspNetCore.Authorization;
 using IReportCatalog = Docugen.Core.Reports.IReportCatalog;
@@ -11,18 +10,13 @@ public sealed class ReportGrpcService(IReportCatalog catalog) : ReportService.Re
 {
     public override Task<ListReportsResponse> ListReports(ListReportsRequest request, ServerCallContext context)
     {
-        var user = context.GetHttpContext().User;
         var response = new ListReportsResponse();
         response.Reports.AddRange(catalog.All
-            .Where(r => ReportAccess.CanRun(user, r))
             .OrderBy(r => r.Name, StringComparer.CurrentCultureIgnoreCase)
             .Select(GrpcMapping.ToSummary));
         return Task.FromResult(response);
     }
 
-    public override Task<Report> GetReport(GetReportRequest request, ServerCallContext context)
-    {
-        var report = GrpcErrors.FindRunnable(catalog, request.Key, context.GetHttpContext().User);
-        return Task.FromResult(GrpcMapping.ToReport(report));
-    }
+    public override Task<Report> GetReport(GetReportRequest request, ServerCallContext context) =>
+        Task.FromResult(GrpcMapping.ToReport(GrpcErrors.FindReport(catalog, request.Key)));
 }

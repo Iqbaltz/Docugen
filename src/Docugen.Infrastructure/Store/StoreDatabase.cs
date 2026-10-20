@@ -32,6 +32,9 @@ public sealed class StoreDatabase
 
         var prefix = IsSqlite ? "" : "docugen.";
         Reports = prefix + "Reports";
+        ReportParameters = prefix + "ReportParameters";
+        ReportColumns = prefix + "ReportColumns";
+        ReportPdfSettings = prefix + "ReportPdfSettings";
         ReportAssets = prefix + "ReportAssets";
         ReportValidation = prefix + "ReportValidation";
         Exports = prefix + "Exports";
@@ -41,6 +44,12 @@ public sealed class StoreDatabase
     public bool IsSqlite { get; }
 
     public string Reports { get; }
+
+    public string ReportParameters { get; }
+
+    public string ReportColumns { get; }
+
+    public string ReportPdfSettings { get; }
 
     public string ReportAssets { get; }
 

@@ -1,6 +1,6 @@
 using System.Data.Common;
+using System.Globalization;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Docugen.Core;
 using Docugen.Core.Reports;
 using Docugen.Infrastructure.Rendering.Pdf;
@@ -11,9 +11,10 @@ using Microsoft.Extensions.Options;
 namespace Docugen.Infrastructure.Catalog;
 
 /// <summary>
-/// Report definitions and template assets read from the store's <c>Reports</c> and <c>ReportAssets</c> tables.
-/// <see cref="RefreshAsync"/> re-reads both; only rows that changed are validated again. Invalid rows are left out
-/// (the rest keep working), logged, and recorded in <c>ReportValidation</c> so authors can see why.
+/// Report definitions and template assets read from the store: <c>Reports</c> with its <c>ReportParameters</c>,
+/// <c>ReportColumns</c> and <c>ReportPdfSettings</c> rows, and <c>ReportAssets</c>. <see cref="RefreshAsync"/>
+/// re-reads them all; only reports whose rows changed are validated again. Invalid reports are left out (the rest
+/// keep working), logged, and recorded in <c>ReportValidation</c> so authors can see why.
 /// </summary>
 public sealed partial class SqlReportCatalog(
     StoreDatabase store,
@@ -22,11 +23,17 @@ public sealed partial class SqlReportCatalog(
     TimeProvider timeProvider,
     ILogger<SqlReportCatalog> logger) : IReportCatalog, IReportAssets
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    private static readonly Dictionary<string, ParameterType> ParameterTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        ReadCommentHandling = JsonCommentHandling.Skip,
-        AllowTrailingCommas = true,
-        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+        ["string"] = ParameterType.String,
+        ["int"] = ParameterType.Int,
+        ["long"] = ParameterType.Long,
+        ["decimal"] = ParameterType.Decimal,
+        ["bool"] = ParameterType.Bool,
+        ["date"] = ParameterType.Date,
+        ["datetime"] = ParameterType.DateTime,
+        ["string[]"] = ParameterType.StringArray,
+        ["int[]"] = ParameterType.IntArray,
     };
 
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
@@ -46,22 +53,22 @@ public sealed partial class SqlReportCatalog(
         await _refreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            List<ReportRow> rows;
+            List<ReportSource> sources;
             List<ReportAsset> assets;
             await using (var connection = await store.OpenAsync(cancellationToken).ConfigureAwait(false))
             {
-                rows = await ReadReportsAsync(connection, cancellationToken).ConfigureAwait(false);
+                sources = await ReadReportsAsync(connection, cancellationToken).ConfigureAwait(false);
                 assets = await ReadAssetsAsync(connection, cancellationToken).ConfigureAwait(false);
             }
 
             var changed = new List<LoadedReport>();
             var reports = new Dictionary<string, ReportDefinition>(StringComparer.OrdinalIgnoreCase);
-            foreach (var row in rows)
+            foreach (var source in sources)
             {
-                if (!_loaded.TryGetValue(row.Key, out var loaded) || loaded.Row != row)
+                if (!_loaded.TryGetValue(source.Report.Key, out var loaded) || !loaded.Source.SameAs(source))
                 {
-                    loaded = Load(row);
-                    _loaded[row.Key] = loaded;
+                    loaded = Load(source);
+                    _loaded[source.Report.Key] = loaded;
                     changed.Add(loaded);
                     LogResult(loaded);
                 }
@@ -72,7 +79,7 @@ public sealed partial class SqlReportCatalog(
                 }
             }
 
-            var present = rows.Select(r => r.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var present = sources.Select(s => s.Report.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var removed = _loaded.Keys.Where(k => !present.Contains(k)).ToList();
             foreach (var key in removed)
             {
@@ -94,10 +101,10 @@ public sealed partial class SqlReportCatalog(
         }
     }
 
-    private LoadedReport Load(ReportRow row)
+    private LoadedReport Load(ReportSource source)
     {
         var errors = new List<string>();
-        var report = Parse(row, errors);
+        var report = Parse(source, errors);
         var warnings = new List<string>();
         if (report is not null)
         {
@@ -105,12 +112,13 @@ public sealed partial class SqlReportCatalog(
             errors.AddRange(validationErrors);
         }
 
-        return new LoadedReport(row, errors.Count == 0 ? report : null, errors, warnings);
+        return new LoadedReport(source, errors.Count == 0 ? report : null, errors, warnings);
     }
 
-    /// <summary>Turns a <c>Reports</c> row into a definition, or adds errors for columns that cannot be read.</summary>
-    internal static ReportDefinition? Parse(ReportRow row, List<string> errors)
+    /// <summary>Turns a report's rows into a definition, or adds errors for values that cannot be read.</summary>
+    internal static ReportDefinition? Parse(ReportSource source, List<string> errors)
     {
+        var row = source.Report;
         var commandType = (row.CommandType ?? "").Trim().ToUpperInvariant() switch
         {
             "" or "TEXT" => ReportCommandType.Text,
@@ -142,58 +150,88 @@ public sealed partial class SqlReportCatalog(
             }
         }
 
-        var parameters = ParseJson<ParameterDefinition>("Parameters", row.Parameters, errors);
-        var columns = ParseJson<ColumnDefinition>("Columns", row.Columns, errors);
+        var parameters = new List<ParameterDefinition>();
+        foreach (var parameter in source.Parameters)
+        {
+            if (!ParameterTypes.TryGetValue((parameter.Type ?? "string").Trim(), out var type))
+            {
+                errors.Add($"ReportParameters: '{parameter.Name}' has type '{parameter.Type}'. Use one of: {string.Join(", ", ParameterTypes.Keys)}.");
+                continue;
+            }
+
+            parameters.Add(new ParameterDefinition
+            {
+                Name = parameter.Name.Trim(),
+                Type = type,
+                Required = parameter.IsRequired,
+                Label = Blank(parameter.Label),
+                Description = Blank(parameter.Description),
+                Default = DefaultValue(type, parameter.DefaultValue),
+                MaxLength = parameter.MaxLength,
+                AllowedValues = parameter.AllowedValues is null ? null : SplitList(parameter.AllowedValues),
+            });
+        }
+
         if (errors.Count > 0)
         {
             return null;
         }
 
+        var pdf = source.Pdf;
         return new ReportDefinition
         {
             Key = row.Key,
             Name = row.Name ?? "",
-            Description = row.Description,
+            Description = Blank(row.Description),
             DataSource = row.DataSource ?? "",
             CommandType = commandType!.Value,
             Query = row.Query?.Trim() ?? "",
-            CountQuery = string.IsNullOrWhiteSpace(row.CountQuery) ? null : row.CountQuery.Trim(),
+            CountQuery = Blank(row.CountQuery)?.Trim(),
             CommandTimeoutSeconds = row.CommandTimeoutSeconds,
-            AllowedRoles = SplitList(row.AllowedRoles),
             Formats = formats,
             Parameters = parameters,
-            Columns = columns,
-            FileName = string.IsNullOrWhiteSpace(row.FileName) ? null : row.FileName.Trim(),
-            Culture = string.IsNullOrWhiteSpace(row.Culture) ? null : row.Culture.Trim(),
-            PdfTemplateSource = string.IsNullOrWhiteSpace(row.PdfTemplate) ? null : row.PdfTemplate,
-            Pdf = new PdfOptions
-            {
-                PageSize = string.IsNullOrWhiteSpace(row.PdfPageSize) ? "A4" : row.PdfPageSize.Trim(),
-                Landscape = row.PdfLandscape,
-                Margin = string.IsNullOrWhiteSpace(row.PdfMargin) ? "15mm" : row.PdfMargin.Trim(),
-                MaxRows = row.PdfMaxRows,
-                ShowPageNumbers = row.PdfShowPageNumbers,
-            },
+            Columns = source.Columns.Select(c => new ColumnDefinition { Field = c.Field.Trim(), Header = Blank(c.Header), Format = Blank(c.Format), Width = c.Width }).ToList(),
+            FileName = Blank(row.FileName)?.Trim(),
+            Culture = Blank(pdf?.Culture)?.Trim(),
+            PdfTemplateSource = Blank(pdf?.Template),
+            Pdf = pdf is null
+                ? new PdfOptions()
+                : new PdfOptions
+                {
+                    PageSize = Blank(pdf.PageSize)?.Trim() ?? "A4",
+                    Landscape = pdf.Landscape,
+                    Margin = Blank(pdf.Margin)?.Trim() ?? "15mm",
+                    MaxRows = pdf.MaxRows,
+                    ShowPageNumbers = pdf.ShowPageNumbers,
+                },
         };
     }
 
-    private static List<T> ParseJson<T>(string column, string? json, List<string> errors)
+    /// <summary>
+    /// A default stored as text becomes the JSON value a caller would send: a list for array types, a number or
+    /// true/false where the text is one, otherwise a string (which the binder still converts, or reports as invalid).
+    /// </summary>
+    private static JsonElement? DefaultValue(ParameterType type, string? text)
     {
-        if (string.IsNullOrWhiteSpace(json))
+        if (text is null)
         {
-            return [];
+            return null;
         }
 
-        try
+        var json = type switch
         {
-            return JsonSerializer.Deserialize<List<T>>(json, JsonOptions) ?? [];
-        }
-        catch (JsonException ex)
-        {
-            errors.Add($"{column} is not a valid JSON array: {ex.Message}");
-            return [];
-        }
+            ParameterType.StringArray or ParameterType.IntArray => JsonSerializer.Serialize(SplitList(text)),
+            ParameterType.Int or ParameterType.Long or ParameterType.Decimal
+                when decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out var number) => number.ToString(CultureInfo.InvariantCulture),
+            ParameterType.Bool when bool.TryParse(text, out var flag) => flag ? "true" : "false",
+            _ => JsonSerializer.Serialize(text),
+        };
+
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
     }
+
+    private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
     private static List<string> SplitList(string? value) =>
         (value ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
@@ -215,64 +253,93 @@ public sealed partial class SqlReportCatalog(
         return new ReportAssets(assets);
     }
 
-    private async Task<List<ReportRow>> ReadReportsAsync(DbConnection connection, CancellationToken cancellationToken)
+    private async Task<List<ReportSource>> ReadReportsAsync(DbConnection connection, CancellationToken cancellationToken)
     {
-        await using var command = connection.CreateCommand();
-        command.CommandText = $"""
-            SELECT ReportKey, Name, Description, DataSource, CommandType, Query, CountQuery, CommandTimeoutSeconds,
-                   AllowedRoles, Formats, Parameters, Columns, FileName, Culture,
-                   PdfTemplate, PdfPageSize, PdfLandscape, PdfMargin, PdfMaxRows, PdfShowPageNumbers
+        var reports = await QueryAsync(connection, $"""
+            SELECT ReportKey, Name, Description, DataSource, CommandType, Query, CountQuery, CommandTimeoutSeconds, Formats, FileName
             FROM {store.Reports}
             WHERE IsActive = 1
-            """;
+            """, r => new ReportRow(
+                r.GetString(0),
+                r.GetNullableString(1),
+                r.GetNullableString(2),
+                r.GetNullableString(3),
+                r.GetNullableString(4),
+                r.GetNullableString(5),
+                r.GetNullableString(6),
+                r.GetNullableInt32(7),
+                r.GetNullableString(8),
+                r.GetNullableString(9)), cancellationToken).ConfigureAwait(false);
 
-        var rows = new List<ReportRow>();
+        var parameters = await QueryAsync(connection, $"""
+            SELECT ReportKey, Name, SortOrder, Type, IsRequired, Label, Description, DefaultValue, MaxLength, AllowedValues
+            FROM {store.ReportParameters}
+            ORDER BY ReportKey, SortOrder, Name
+            """, r => new ParameterRow(
+                r.GetString(0),
+                r.GetString(1),
+                r.GetInt32(2),
+                r.GetNullableString(3),
+                !r.IsDBNull(4) && r.GetBoolean(4),
+                r.GetNullableString(5),
+                r.GetNullableString(6),
+                r.GetNullableString(7),
+                r.GetNullableInt32(8),
+                r.GetNullableString(9)), cancellationToken).ConfigureAwait(false);
+
+        var columns = await QueryAsync(connection, $"""
+            SELECT ReportKey, Field, SortOrder, Header, Format, Width
+            FROM {store.ReportColumns}
+            ORDER BY ReportKey, SortOrder, Field
+            """, r => new ColumnRow(
+                r.GetString(0),
+                r.GetString(1),
+                r.GetInt32(2),
+                r.GetNullableString(3),
+                r.GetNullableString(4),
+                r.IsDBNull(5) ? null : Convert.ToDouble(r.GetValue(5), CultureInfo.InvariantCulture)), cancellationToken).ConfigureAwait(false);
+
+        var pdfSettings = await QueryAsync(connection, $"""
+            SELECT ReportKey, Template, PageSize, Landscape, Margin, MaxRows, ShowPageNumbers, Culture
+            FROM {store.ReportPdfSettings}
+            """, r => new PdfRow(
+                r.GetString(0),
+                r.GetNullableString(1),
+                r.GetNullableString(2),
+                !r.IsDBNull(3) && r.GetBoolean(3),
+                r.GetNullableString(4),
+                r.GetNullableInt32(5),
+                r.IsDBNull(6) || r.GetBoolean(6),
+                r.GetNullableString(7)), cancellationToken).ConfigureAwait(false);
+
+        var parametersByReport = parameters.ToLookup(p => p.ReportKey, StringComparer.OrdinalIgnoreCase);
+        var columnsByReport = columns.ToLookup(c => c.ReportKey, StringComparer.OrdinalIgnoreCase);
+        var pdfByReport = pdfSettings.ToDictionary(p => p.ReportKey, StringComparer.OrdinalIgnoreCase);
+        return reports
+            .Select(r => new ReportSource(r, parametersByReport[r.Key].ToList(), columnsByReport[r.Key].ToList(), pdfByReport.GetValueOrDefault(r.Key)))
+            .ToList();
+    }
+
+    private static async Task<List<T>> QueryAsync<T>(DbConnection connection, string sql, Func<DbDataReader, T> read, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        var rows = new List<T>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            rows.Add(new ReportRow(
-                reader.GetString(0),
-                reader.GetNullableString(1),
-                reader.GetNullableString(2),
-                reader.GetNullableString(3),
-                reader.GetNullableString(4),
-                reader.GetNullableString(5),
-                reader.GetNullableString(6),
-                reader.GetNullableInt32(7),
-                reader.GetNullableString(8),
-                reader.GetNullableString(9),
-                reader.GetNullableString(10),
-                reader.GetNullableString(11),
-                reader.GetNullableString(12),
-                reader.GetNullableString(13),
-                reader.GetNullableString(14),
-                reader.GetNullableString(15),
-                !reader.IsDBNull(16) && reader.GetBoolean(16),
-                reader.GetNullableString(17),
-                reader.GetNullableInt32(18),
-                reader.IsDBNull(19) || reader.GetBoolean(19)));
+            rows.Add(read(reader));
         }
 
         return rows;
     }
 
-    private async Task<List<ReportAsset>> ReadAssetsAsync(DbConnection connection, CancellationToken cancellationToken)
-    {
-        await using var command = connection.CreateCommand();
-        command.CommandText = $"SELECT FileName, TextContent, BinaryContent FROM {store.ReportAssets}";
-
-        var assets = new List<ReportAsset>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            assets.Add(new ReportAsset(
-                reader.GetString(0),
-                reader.GetNullableString(1),
-                reader.IsDBNull(2) ? null : reader.GetFieldValue<byte[]>(2)));
-        }
-
-        return assets;
-    }
+    private async Task<List<ReportAsset>> ReadAssetsAsync(DbConnection connection, CancellationToken cancellationToken) =>
+        await QueryAsync(
+            connection,
+            $"SELECT FileName, TextContent, BinaryContent FROM {store.ReportAssets}",
+            r => new ReportAsset(r.GetString(0), r.GetNullableString(1), r.IsDBNull(2) ? null : r.GetFieldValue<byte[]>(2)),
+            cancellationToken).ConfigureAwait(false);
 
     /// <summary>Records the outcome for changed reports so authors can query <c>ReportValidation</c>.</summary>
     private async Task SaveValidationAsync(List<LoadedReport> changed, List<string> removed, CancellationToken cancellationToken)
@@ -301,7 +368,7 @@ public sealed partial class SqlReportCatalog(
                     INSERT INTO {store.ReportValidation} (ReportKey, IsValid, Errors, Warnings, CheckedAtUtc)
                     VALUES (@key, @valid, @errors, @warnings, @checkedAt);
                     """;
-                upsert.AddParameter("@key", loaded.Row.Key);
+                upsert.AddParameter("@key", loaded.Source.Report.Key);
                 upsert.AddParameter("@valid", loaded.Report is not null);
                 upsert.AddParameter("@errors", loaded.Errors.Count == 0 ? null : string.Join(Environment.NewLine, loaded.Errors));
                 upsert.AddParameter("@warnings", loaded.Warnings.Count == 0 ? null : string.Join(Environment.NewLine, loaded.Warnings));
@@ -319,20 +386,21 @@ public sealed partial class SqlReportCatalog(
 
     private void LogResult(LoadedReport loaded)
     {
+        var key = loaded.Source.Report.Key;
         if (loaded.Report is null)
         {
-            LogReportInvalid(logger, loaded.Row.Key, string.Join(" | ", loaded.Errors));
+            LogReportInvalid(logger, key, string.Join(" | ", loaded.Errors));
             return;
         }
 
-        LogReportLoaded(logger, loaded.Row.Key);
+        LogReportLoaded(logger, key);
         foreach (var warning in loaded.Warnings)
         {
-            LogReportWarning(logger, loaded.Row.Key, warning);
+            LogReportWarning(logger, key, warning);
         }
     }
 
-    /// <summary>The raw values of a <c>Reports</c> row. Record equality detects changes between refreshes.</summary>
+    /// <summary>A <c>Reports</c> row as stored.</summary>
     internal sealed record ReportRow(
         string Key,
         string? Name,
@@ -342,20 +410,36 @@ public sealed partial class SqlReportCatalog(
         string? Query,
         string? CountQuery,
         int? CommandTimeoutSeconds,
-        string? AllowedRoles,
         string? Formats,
-        string? Parameters,
-        string? Columns,
-        string? FileName,
-        string? Culture,
-        string? PdfTemplate,
-        string? PdfPageSize,
-        bool PdfLandscape,
-        string? PdfMargin,
-        int? PdfMaxRows,
-        bool PdfShowPageNumbers);
+        string? FileName);
 
-    private sealed record LoadedReport(ReportRow Row, ReportDefinition? Report, List<string> Errors, List<string> Warnings);
+    /// <summary>A <c>ReportParameters</c> row as stored.</summary>
+    internal sealed record ParameterRow(
+        string ReportKey,
+        string Name,
+        int SortOrder,
+        string? Type,
+        bool IsRequired,
+        string? Label,
+        string? Description,
+        string? DefaultValue,
+        int? MaxLength,
+        string? AllowedValues);
+
+    /// <summary>A <c>ReportColumns</c> row as stored.</summary>
+    internal sealed record ColumnRow(string ReportKey, string Field, int SortOrder, string? Header, string? Format, double? Width);
+
+    /// <summary>A <c>ReportPdfSettings</c> row as stored.</summary>
+    internal sealed record PdfRow(string ReportKey, string? Template, string? PageSize, bool Landscape, string? Margin, int? MaxRows, bool ShowPageNumbers, string? Culture);
+
+    /// <summary>Everything stored for one report. <see cref="SameAs"/> detects changes between refreshes.</summary>
+    internal sealed record ReportSource(ReportRow Report, IReadOnlyList<ParameterRow> Parameters, IReadOnlyList<ColumnRow> Columns, PdfRow? Pdf)
+    {
+        public bool SameAs(ReportSource other) =>
+            Report == other.Report && Parameters.SequenceEqual(other.Parameters) && Columns.SequenceEqual(other.Columns) && Pdf == other.Pdf;
+    }
+
+    private sealed record LoadedReport(ReportSource Source, ReportDefinition? Report, List<string> Errors, List<string> Warnings);
 
     private sealed record Snapshot(Dictionary<string, ReportDefinition> Reports, ReportAssets Assets);
 

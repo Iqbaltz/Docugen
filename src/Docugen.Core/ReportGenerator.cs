@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using Docugen.Core.Data;
+using Docugen.Core.Exports;
 using Docugen.Core.Parameters;
 using Docugen.Core.Rendering;
 using Docugen.Core.Reports;
@@ -24,12 +25,18 @@ public sealed partial class ReportGenerator(
             ? renderer
             : throw new NotSupportedException($"No renderer is registered for {format}.");
 
-    /// <summary>Generates the document. Parameters must already be bound with <see cref="ParameterBinder"/>.</summary>
-    public async Task<GeneratedDocument> GenerateAsync(
+    /// <summary>
+    /// Generates the document into <paramref name="output"/>. Parameters must already be bound with
+    /// <see cref="ParameterBinder"/>. If the report has a count query it runs first, so an export over the row
+    /// limit fails before the main query starts.
+    /// </summary>
+    public async Task<GenerationResult> GenerateAsync(
         ReportDefinition report,
         OutputFormat format,
         IReadOnlyList<BoundParameter> parameters,
         string? generatedBy,
+        Stream output,
+        IReportProgress? progress,
         CancellationToken cancellationToken)
     {
         if (!report.Supports(format))
@@ -42,47 +49,43 @@ public sealed partial class ReportGenerator(
         var started = Stopwatch.GetTimestamp();
         var now = timeProvider.GetLocalNow();
         var context = new RenderContext(report, parameters, ResolveCulture(report.Culture ?? settings.DefaultCulture), now, generatedBy);
+        var rowLimit = renderer.GetRowLimit(report) is { } formatLimit
+            ? Math.Min(formatLimit, settings.Limits.MaxRows)
+            : settings.Limits.MaxRows;
 
-        var output = CreateTempFile(settings.TempPath);
-        try
+        if (!string.IsNullOrWhiteSpace(report.CountQuery))
         {
-            long rowCount;
-            await using (var data = await dataSource.ExecuteAsync(report, parameters, cancellationToken).ConfigureAwait(false))
+            progress?.StageChanged(ExportStage.CountingRows);
+            var total = await dataSource.CountAsync(report, parameters, cancellationToken).ConfigureAwait(false);
+            progress?.TotalRowsCounted(total);
+            if (total > rowLimit)
             {
-                data.RowLimit = renderer.GetRowLimit(report) is { } formatLimit
-                    ? Math.Min(formatLimit, settings.Limits.MaxRows)
-                    : settings.Limits.MaxRows;
+                throw new ReportLimitExceededException(rowLimit);
+            }
+        }
 
-                await renderer.RenderAsync(context, data, output, cancellationToken).ConfigureAwait(false);
-                rowCount = data.RowCount;
+        progress?.StageChanged(ExportStage.Querying);
+        long rowCount;
+        await using (var data = await dataSource.ExecuteAsync(report, parameters, cancellationToken).ConfigureAwait(false))
+        {
+            data.RowLimit = rowLimit;
+            if (progress is not null)
+            {
+                progress.StageChanged(ExportStage.WritingRows);
+                data.RowRead = progress.RowsWritten;
+                data.ReadCompleted = () => progress.StageChanged(ExportStage.Finalizing);
             }
 
-            await output.FlushAsync(cancellationToken).ConfigureAwait(false);
-            output.Position = 0;
-
-            var fileName = FileNameFormatter.Format(report.FileName, report.Key, parameters, now, renderer.FileExtension);
-            LogGenerated(logger, report.Key, format, generatedBy ?? "(anonymous)", rowCount, (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds);
-
-            return new GeneratedDocument(output, renderer.ContentType, fileName, rowCount);
+            await renderer.RenderAsync(context, data, output, cancellationToken).ConfigureAwait(false);
+            rowCount = data.RowCount;
         }
-        catch
-        {
-            await output.DisposeAsync().ConfigureAwait(false);
-            throw;
-        }
-    }
 
-    private static FileStream CreateTempFile(string? tempPath)
-    {
-        var folder = string.IsNullOrWhiteSpace(tempPath) ? Path.GetTempPath() : tempPath;
-        Directory.CreateDirectory(folder);
-        return new FileStream(
-            Path.Combine(folder, $"docugen-{Guid.NewGuid():N}.tmp"),
-            FileMode.CreateNew,
-            FileAccess.ReadWrite,
-            FileShare.None,
-            bufferSize: 81920,
-            FileOptions.DeleteOnClose | FileOptions.Asynchronous);
+        await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+        var fileName = FileNameFormatter.Format(report.FileName, report.Key, parameters, now, renderer.FileExtension);
+        LogGenerated(logger, report.Key, format, generatedBy ?? "(anonymous)", rowCount, (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+
+        return new GenerationResult(renderer.ContentType, fileName, rowCount);
     }
 
     private static CultureInfo ResolveCulture(string name)

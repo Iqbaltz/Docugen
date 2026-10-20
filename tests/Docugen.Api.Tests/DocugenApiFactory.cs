@@ -1,5 +1,7 @@
 using System.Security.Claims;
 using System.Text.Encodings.Web;
+using Grpc.Core;
+using Grpc.Net.Client;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -11,22 +13,44 @@ using Microsoft.Extensions.Options;
 
 namespace Docugen.Api.Tests;
 
-/// <summary>Runs the real API against the repository's sample reports and a seeded Sqlite database.</summary>
+/// <summary>Runs the real gRPC service against Sqlite copies of the store (with the sample reports) and the sales data.</summary>
 public sealed class DocugenApiFactory : WebApplicationFactory<Program>
 {
-    private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"docugen-api-{Guid.NewGuid():N}.db");
+    private readonly string _storePath = Path.Combine(Path.GetTempPath(), $"docugen-store-{Guid.NewGuid():N}.db");
+    private readonly string _salesPath = Path.Combine(Path.GetTempPath(), $"docugen-sales-{Guid.NewGuid():N}.db");
+    private readonly string _tempPath = Path.Combine(Path.GetTempPath(), $"docugen-temp-{Guid.NewGuid():N}");
+    private GrpcChannel? _channel;
 
     public static string RepoRoot { get; } = FindRepoRoot();
+
+    /// <summary>Where files are rendered before they are sent; empty again once each export has finished.</summary>
+    public string TempPath => _tempPath;
+
+    /// <summary>The Sqlite store, for checking the export log directly.</summary>
+    public string StoreConnectionString => $"Data Source={_storePath};Pooling=False";
+
+    /// <summary>A channel to the in-memory server. Pass <see cref="As"/> metadata to sign in.</summary>
+    public GrpcChannel Channel => _channel ??= GrpcChannel.ForAddress(Server.BaseAddress, new GrpcChannelOptions { HttpHandler = Server.CreateHandler() });
+
+    /// <summary>Call metadata that signs the call in as <paramref name="user"/> with the given roles.</summary>
+    public static Metadata As(string user, params string[] roles) => new()
+    {
+        { TestAuthHandler.UserHeader, user },
+        { TestAuthHandler.RolesHeader, string.Join(',', roles) },
+    };
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
         builder.ConfigureAppConfiguration(configuration => configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["Docugen:ReportsPath"] = Path.Combine(RepoRoot, "reports"),
+            ["Docugen:Store:Provider"] = "Sqlite",
+            ["Docugen:Store:ConnectionString"] = $"Data Source={_storePath};Pooling=False",
+            ["Docugen:Store:SeedScript"] = Path.Combine(RepoRoot, "samples", "sqlite", "docugen-store.sql"),
             ["Docugen:DataSources:SalesDb:Provider"] = "Sqlite",
-            ["Docugen:DataSources:SalesDb:ConnectionString"] = $"Data Source={_databasePath};Pooling=False",
+            ["Docugen:DataSources:SalesDb:ConnectionString"] = $"Data Source={_salesPath};Pooling=False",
             ["Docugen:DataSources:SalesDb:SeedScript"] = Path.Combine(RepoRoot, "samples", "sqlite", "seed.sql"),
+            ["Docugen:TempPath"] = _tempPath,
             ["Docugen:Limits:MaxPdfRows"] = "10",
             ["Docugen:Pdf:BrowserExecutablePath"] = Environment.GetEnvironmentVariable("DOCUGEN_BROWSER_PATH"),
         }));
@@ -44,22 +68,16 @@ public sealed class DocugenApiFactory : WebApplicationFactory<Program>
         });
     }
 
-    public HttpClient CreateClient(string? user, params string[] roles)
-    {
-        var client = CreateClient();
-        if (user is not null)
-        {
-            client.DefaultRequestHeaders.Add(TestAuthHandler.UserHeader, user);
-            client.DefaultRequestHeaders.Add(TestAuthHandler.RolesHeader, string.Join(',', roles));
-        }
-
-        return client;
-    }
-
     public override async ValueTask DisposeAsync()
     {
+        _channel?.Dispose();
         await base.DisposeAsync();
-        File.Delete(_databasePath);
+        File.Delete(_storePath);
+        File.Delete(_salesPath);
+        if (Directory.Exists(_tempPath))
+        {
+            Directory.Delete(_tempPath, recursive: true);
+        }
     }
 
     private static string FindRepoRoot()
@@ -76,13 +94,13 @@ public sealed class DocugenApiFactory : WebApplicationFactory<Program>
     }
 }
 
-/// <summary>Authenticates requests from test headers instead of a JWT.</summary>
+/// <summary>Authenticates calls from test metadata instead of a JWT.</summary>
 internal sealed class TestAuthHandler(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)
     : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
 {
     public const string SchemeName = "Test";
-    public const string UserHeader = "X-Test-User";
-    public const string RolesHeader = "X-Test-Roles";
+    public const string UserHeader = "x-test-user";
+    public const string RolesHeader = "x-test-roles";
 
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
     {

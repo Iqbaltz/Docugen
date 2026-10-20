@@ -26,6 +26,27 @@ public sealed class PdfRendererTests : IAsyncLifetime
     public ValueTask DisposeAsync() => _converter.DisposeAsync();
 
     [Fact]
+    public async Task Stops_promptly_when_cancelled_at_any_moment_and_frees_its_render_slot()
+    {
+        var settings = new PdfPageSettings("A4", false, "15mm", null);
+        var html = "<html><body>" + string.Concat(Enumerable.Range(0, 2000).Select(i => $"<p>Row {i}</p>")) + "</body></html>";
+        await _converter.ConvertAsync("<p>warm-up</p>", settings, TestContext.Current.CancellationToken);
+
+        foreach (var delayMs in new[] { 1, 2, 3, 5, 8, 13 })
+        {
+            using var cancel = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            cancel.CancelAfter(delayMs);
+
+            // Cancelling in the first milliseconds used to leave the conversion, and its render slot, waiting forever.
+            var conversion = _converter.ConvertAsync(html, settings, cancel.Token);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => conversion.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        }
+
+        var pdf = await _converter.ConvertAsync("<p>after</p>", settings, TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        Assert.Equal("%PDF"u8.ToArray(), pdf[..4]);
+    }
+
+    [Fact]
     public async Task Prints_the_built_in_template_with_data_filters_and_page_numbers()
     {
         var report = TestSupport.Report() with
@@ -99,7 +120,7 @@ public sealed class PdfRendererTests : IAsyncLifetime
     }
 
     private PdfRenderer CreateRenderer() =>
-        new(new LiquidTemplateEngine(), _converter, new ReportAssets(Path.Combine(TestSupport.ReportsPath, "_assets")), TestSupport.Options());
+        new(new LiquidTemplateEngine(), _converter, ReportAssets.Empty, TestSupport.Options());
 
     private async Task<string> RenderTextAsync(ReportDefinition report, IReadOnlyList<BoundParameter> parameters, params object?[][] rows)
     {

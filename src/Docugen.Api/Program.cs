@@ -1,12 +1,6 @@
-using System.Threading.RateLimiting;
-using Docugen.Api;
-using Docugen.Api.Endpoints;
-using Docugen.Core;
-using Docugen.Core.Reports;
+using Docugen.Api.Services;
 using Docugen.Infrastructure;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.RateLimiting;
-using Scalar.AspNetCore;
 
 // "dotnet Docugen.Api.dll install-browsers" downloads Chromium for PDF rendering (used by the Dockerfile).
 if (args is ["install-browsers", ..])
@@ -17,45 +11,28 @@ if (args is ["install-browsers", ..])
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddDocugen(builder.Configuration);
-builder.Services.AddProblemDetails();
-builder.Services.AddExceptionHandler<DocugenExceptionHandler>();
-builder.Services.AddOpenApi();
+builder.Services.AddGrpc(options => options.EnableDetailedErrors = builder.Environment.IsDevelopment());
+builder.Services.AddGrpcHealthChecks();
+builder.Services.AddGrpcReflection();
 
 // Token settings come from Authentication:Schemes:Bearer (Authority, ValidAudiences, ...).
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer();
 builder.Services.AddAuthorization();
 
-var limits = builder.Configuration.GetSection($"{DocugenOptions.SectionName}:Limits").Get<LimitOptions>() ?? new LimitOptions();
-builder.Services.AddRateLimiter(options =>
-{
-    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-    options.AddConcurrencyLimiter(ReportEndpoints.RenderRateLimiter, limiter =>
-    {
-        limiter.PermitLimit = limits.MaxConcurrentRenders;
-        limiter.QueueLimit = limits.MaxQueuedRenders;
-        limiter.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
-    });
-});
-
 var app = builder.Build();
 
-// Load and validate every report definition now so a broken definition stops the deployment.
-app.Services.GetRequiredService<IReportCatalog>();
-
-app.UseExceptionHandler();
-app.UseStatusCodePages();
 app.UseAuthentication();
 app.UseAuthorization();
-app.UseRateLimiter();
 
+app.MapGrpcService<ReportGrpcService>();
+app.MapGrpcService<ExportGrpcService>();
+app.MapGrpcHealthChecksService();
+
+// Lets tools such as Postman and grpcurl discover the services without the .proto file.
 if (app.Environment.IsDevelopment())
 {
-    app.MapOpenApi();
-    app.MapScalarApiReference();
+    app.MapGrpcReflectionService();
 }
-
-app.MapReportEndpoints();
-app.MapHealthChecks("/health");
 
 app.Run();
 return 0;

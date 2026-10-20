@@ -1,0 +1,150 @@
+// Docugen gRPC API, version 1.
+//
+// Every call needs a bearer token ("authorization: Bearer <token>" metadata) except grpc.health.v1.Health.
+// To produce a document, call ExportService/Export: one call streams progress while the report runs, then the file.
+// Docugen keeps no state between calls; run long exports from your own background job and set a deadline that fits.
+
+syntax = "proto3";
+
+package docugen.v1;
+
+option csharp_namespace = "Docugen.Contracts.V1";
+
+import "google/protobuf/struct.proto";
+
+// Reports registered in the Docugen store.
+service ReportService {
+  // Lists the reports the caller is allowed to run.
+  rpc ListReports (ListReportsRequest) returns (ListReportsResponse);
+
+  // Describes one report: its parameters, formats and columns. The SQL is never exposed.
+  // NOT_FOUND for an unknown report, PERMISSION_DENIED without one of its roles.
+  rpc GetReport (GetReportRequest) returns (Report);
+}
+
+service ExportService {
+  // Runs a report and streams the result, in this order:
+  //   1. `progress` messages while it runs (stage, 0-100 percent, rows written);
+  //   2. one `file` message (name, content type, size) once the file is complete;
+  //   3. `chunk` messages: the file's bytes, to append in order.
+  // Cancelling the call (or its deadline passing) stops the export.
+  //
+  // Errors before anything runs: INVALID_ARGUMENT for a bad format or parameters (details carry a
+  // google.rpc.BadRequest with one violation per field, e.g. "parameters.FromDate"), NOT_FOUND for an unknown
+  // report, PERMISSION_DENIED without one of the report's roles, RESOURCE_EXHAUSTED when too many exports are
+  // running and waiting.
+  // Errors while it runs carry a google.rpc.ErrorInfo (domain "docugen") whose reason says why and whose metadata
+  // holds the export_id: FAILED_PRECONDITION / TOO_MANY_ROWS, DEADLINE_EXCEEDED / QUERY_TIMEOUT,
+  // INTERNAL / DEFINITION_MISMATCH or INTERNAL.
+  rpc Export (ExportRequest) returns (stream ExportResponse);
+}
+
+enum OutputFormat {
+  OUTPUT_FORMAT_UNSPECIFIED = 0;
+  OUTPUT_FORMAT_PDF = 1;
+  OUTPUT_FORMAT_XLSX = 2;
+  OUTPUT_FORMAT_CSV = 3;
+}
+
+message ListReportsRequest {}
+
+message ListReportsResponse {
+  repeated ReportSummary reports = 1;
+}
+
+message ReportSummary {
+  string key = 1;
+  string name = 2;
+  string description = 3;
+  repeated OutputFormat formats = 4;
+}
+
+message GetReportRequest {
+  string key = 1;
+}
+
+message Report {
+  string key = 1;
+  string name = 2;
+  string description = 3;
+  repeated OutputFormat formats = 4;
+  repeated ReportParameter parameters = 5;
+  repeated ReportColumn columns = 6;
+
+  // True when the report has a count query: progress percent then moves smoothly while rows are written.
+  bool exact_progress = 7;
+}
+
+message ReportParameter {
+  string name = 1;
+
+  // string, int, long, decimal, bool, date (yyyy-MM-dd), datetime (ISO 8601), int[] or string[].
+  string type = 2;
+  bool required = 3;
+  string label = 4;
+  string description = 5;
+
+  // Used when the caller leaves the parameter out. Not set when there is none.
+  google.protobuf.Value default_value = 6;
+  repeated string allowed_values = 7;
+  optional int32 max_length = 8;
+}
+
+message ReportColumn {
+  string field = 1;
+  string header = 2;
+}
+
+message ExportRequest {
+  string report_key = 1;
+  OutputFormat format = 2;
+
+  // Parameter values by name, e.g. {"FromDate": "2026-01-01", "Region": "East"}. Dates are strings.
+  // Whole numbers above 2^53 must be sent as strings.
+  google.protobuf.Struct parameters = 3;
+}
+
+message ExportResponse {
+  oneof payload {
+    ExportProgress progress = 1;
+    ExportFileInfo file = 2;
+    bytes chunk = 3;
+  }
+}
+
+enum ExportStage {
+  EXPORT_STAGE_UNSPECIFIED = 0;
+
+  // Waiting for a free export slot.
+  EXPORT_STAGE_QUEUED = 1;
+  EXPORT_STAGE_COUNTING_ROWS = 2;
+  EXPORT_STAGE_QUERYING = 3;
+  EXPORT_STAGE_WRITING_ROWS = 4;
+
+  // All rows are read and the file is being completed (for PDFs, this is when it is printed).
+  EXPORT_STAGE_FINALIZING = 5;
+
+  // The file is ready; the `file` message and chunks follow.
+  EXPORT_STAGE_COMPLETED = 6;
+}
+
+// Sent when the stage changes and at most every quarter of a second while rows are written.
+message ExportProgress {
+  ExportStage stage = 1;
+
+  // 0 to 100. Without a count query (Report.exact_progress is false) the total is unknown, so it stays at 10
+  // while rows are written; rows_written shows the movement.
+  int32 percent = 2;
+  int64 rows_written = 3;
+  optional int64 total_rows = 4;
+}
+
+message ExportFileInfo {
+  string file_name = 1;
+  string content_type = 2;
+  int64 size = 3;
+  int64 row_count = 4;
+
+  // The export's id in Docugen's export log; quote it when reporting a problem.
+  string export_id = 5;
+}

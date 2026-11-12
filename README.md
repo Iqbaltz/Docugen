@@ -29,7 +29,7 @@ Export ─► API key ─► catalog ─► parameter binding ─► export slot
 | `src/Docugen.Infrastructure` | The store-backed report catalog and its validation; ADO.NET data access (SQL Server, plus Sqlite for demos); the CSV, XLSX and PDF renderers; the exporter and the export log. |
 | `src/Docugen.Api` | The gRPC services, API key authentication, gRPC health checks and server reflection. |
 | `db/sqlserver/` | The store schema for SQL Server. |
-| `samples/` | Demo sales data (SQL Server and Sqlite), the sample reports for the store, and a ready-made Sqlite store. |
+| `samples/` | Demo sales data (SQL Server and Sqlite), the sample reports for the store, a ready-made Sqlite store, and `Docugen.ExportClient`, a command-line client that saves exports to files. |
 
 Design choices:
 
@@ -102,7 +102,18 @@ To make a random key, run `openssl rand -base64 32`, or in PowerShell: `$b = New
    ```json
    { "report_key": "sales-orders", "format": "OUTPUT_FORMAT_XLSX", "parameters": { "FromDate": "2026-01-01", "ToDate": "2026-03-31" } }
    ```
-5. Postman lists the progress messages, then the `file` message, then the chunks (as base64). That is good for checking the call; use a real client to save the file.
+5. Postman lists the progress messages, then the `file` message, then the chunks (as base64). That is good for checking the call, but Postman cannot save the file; use the sample client below.
+
+### Saving files with the sample client
+
+`samples/Docugen.ExportClient` runs an export, shows the progress and saves the file to your Downloads folder. It shares the API's user secrets, so it uses your local key without setup.
+
+```bash
+dotnet run --project samples/Docugen.ExportClient -- sales-orders pdf FromDate=2026-01-01 ToDate=2026-03-31
+dotnet run --project samples/Docugen.ExportClient -- customer-list csv --out ./exports
+```
+
+In Visual Studio, start the API, then right-click `Docugen.ExportClient` → **Debug → Start New Instance**; pick an export from the profiles next to the Start button. Options: `--server <url>` (default `http://localhost:5180`), `--key <key>` (default `DOCUGEN_API_KEY`, then your user secrets), `--out <folder>`. Pass list parameters as JSON: `Ids=[1,2,3]`.
 
 ## Calling Docugen from another application
 

@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/Docugen.ExportClient/Docugen.ExportClient.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/Docugen.Api/Docugen.Api.csproj" />
     <Project Path="src/Docugen.Contracts/Docugen.Contracts.csproj" />

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/launchsettings.json",
+  "profiles": {
+    "sales-orders pdf": {
+      "commandName": "Project",
+      "commandLineArgs": "sales-orders pdf FromDate=2026-01-01 ToDate=2026-03-31"
+    },
+    "sales-orders xlsx": {
+      "commandName": "Project",
+      "commandLineArgs": "sales-orders xlsx FromDate=2026-01-01 ToDate=2026-03-31"
+    },
+    "customer-list csv": {
+      "commandName": "Project",
+      "commandLineArgs": "customer-list csv"
+    }
+  }
+}

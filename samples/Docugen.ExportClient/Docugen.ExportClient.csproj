@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- A small command-line client: runs an export and saves the file. Also a working example for teams calling
+       Docugen. It shares the API's user secrets (docugen-api), so a local API key works without setup. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Docugen.ExportClient</RootNamespace>
+    <UserSecretsId>docugen-api</UserSecretsId>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Grpc.Net.Client" />
+    <PackageReference Include="Grpc.StatusProto" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Docugen.Contracts\Docugen.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>
